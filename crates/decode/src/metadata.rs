@@ -190,16 +190,6 @@ impl Metadata {
         }
     }
 
-    /// The chain's SS58 address prefix.
-    pub fn ss58_prefix(&self) -> u16 {
-        self.ss58_prefix
-    }
-
-    /// Number of storage items in the metadata.
-    pub fn storage_item_count(&self) -> usize {
-        self.items.len()
-    }
-
     fn types(&self) -> &PortableRegistry {
         with_runtime!(&self.runtime, md => &md.types)
     }

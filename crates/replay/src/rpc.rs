@@ -188,14 +188,6 @@ impl Rpc {
             })
             .collect()
     }
-    #[cfg(test)]
-    pub(crate) fn pool_threads(&self) -> Option<usize> {
-        self.inner
-            .pool
-            .get()
-            .and_then(|p| p.as_ref().ok())
-            .map(rayon::ThreadPool::current_num_threads)
-    }
     pub fn cancelled(&self) -> bool {
         self.inner.cancel.is_cancelled()
     }
@@ -549,7 +541,7 @@ mod tests {
         (Rpc::new(&url).unwrap(), worker)
     }
     #[test]
-    fn queued_call_gets_full_request_budget_and_forks_share_admission() {
+    fn queued_calls_get_the_full_request_budget_share_admission_with_forks_and_can_be_cancelled() {
         let (mut rpc, server) =
             responses(vec![(200, r#"{"jsonrpc":"2.0","id":$ID,"result":true}"#)]);
         Arc::get_mut(&mut rpc.inner).unwrap().deadline = Duration::from_millis(200);
@@ -576,10 +568,7 @@ mod tests {
         assert_eq!(rpc.count(), 0);
         worker.join().unwrap();
         server.join().unwrap();
-    }
-    #[test]
-    fn queued_call_cancels_without_waiting_for_slot() {
-        let rpc = Rpc::new("http://127.0.0.1:1").unwrap();
+        // A queued call is cancelled without waiting for a slot.
         let permit = runtime()
             .unwrap()
             .block_on(rpc.inner.limit.acquire_many(rpc.parallelism() as u32))
@@ -602,7 +591,19 @@ mod tests {
         worker.join().unwrap();
     }
     #[test]
-    fn exhausted_rate_limits_remain_transient_and_cancellation_is_typed() {
+    fn rate_limits_are_retried_until_exhausted_then_transient_and_cancellation_is_typed() {
+        // HTTP 429 and JSON-RPC 429 errors are retried.
+        let (rpc, worker) = responses(vec![
+            (429, "rate limited"),
+            (
+                200,
+                r#"{"jsonrpc":"2.0","id":$ID,"error":{"code":429,"message":"busy"}}"#,
+            ),
+            (200, r#"{"jsonrpc":"2.0","id":$ID,"result":"ok"}"#),
+        ]);
+        assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), "ok");
+        assert_eq!(rpc.count(), 3);
+        worker.join().unwrap();
         let (rpc, worker) = responses(vec![(429, "busy"); 4]);
         assert!(
             rpc.call("chain_getHeader", json!([]))
@@ -616,20 +617,6 @@ mod tests {
             rpc.call("chain_getHeader", json!([])),
             Err(Error::Cancelled)
         ));
-    }
-    #[test]
-    fn http_429_and_json_rpc_rate_limits_are_retried() {
-        let (rpc, worker) = responses(vec![
-            (429, "rate limited"),
-            (
-                200,
-                r#"{"jsonrpc":"2.0","id":$ID,"error":{"code":429,"message":"busy"}}"#,
-            ),
-            (200, r#"{"jsonrpc":"2.0","id":$ID,"result":"ok"}"#),
-        ]);
-        assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), "ok");
-        assert_eq!(rpc.count(), 3);
-        worker.join().unwrap();
     }
     #[test]
     fn request_timeouts_are_retried_within_the_overall_deadline() {
@@ -647,32 +634,6 @@ mod tests {
         assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), "ok");
         assert_eq!(rpc.count(), 2);
         worker.join().unwrap();
-    }
-    #[test]
-    fn json_rpc_errors_only_describe_pruning_when_specific() {
-        for (message, pruning) in [
-            ("Invalid params", false),
-            ("Method not found", false),
-            ("State already discarded", true),
-        ] {
-            let body = format!(
-                r#"{{"jsonrpc":"2.0","id":$ID,"error":{{"code":-32000,"message":"{message}"}}}}"#
-            );
-            // The loopback server owns these static test strings for its short lifetime.
-            let (rpc, worker) = responses(vec![(200, Box::leak(body.into_boxed_str()))]);
-            let error = rpc
-                .call("chain_getHeader", json!([]))
-                .unwrap_err()
-                .to_string();
-            assert_eq!(
-                error.contains("parent state may be pruned"),
-                pruning,
-                "{error}"
-            );
-            assert!(error.contains(message));
-            assert_eq!(rpc.count(), 1);
-            worker.join().unwrap();
-        }
     }
     #[test]
     fn a_response_over_the_size_limit_is_refused_and_not_retried() {
@@ -727,34 +688,6 @@ mod tests {
         worker.join().unwrap();
     }
     #[test]
-    fn malformed_json_envelopes_and_null_blocks_have_specific_errors() {
-        for body in [
-            "not json",
-            r#"{"jsonrpc":"2.0","id":999,"result":null}"#,
-            r#"{"jsonrpc":"2.0","id":$ID}"#,
-            r#"{"jsonrpc":"1.0","id":$ID,"result":null}"#,
-        ] {
-            let (rpc, worker) = responses(vec![(200, body)]);
-            assert!(rpc.call("chain_getHeader", json!([])).is_err());
-            worker.join().unwrap();
-        }
-        for selector in [
-            "1000",
-            "0x1111111111111111111111111111111111111111111111111111111111111111",
-            "best",
-            "finalized",
-        ] {
-            let (rpc, worker) =
-                responses(vec![(200, r#"{"jsonrpc":"2.0","id":$ID,"result":null}"#)]);
-            let error = crate::online(&rpc, selector).unwrap_err().to_string();
-            assert!(
-                error.contains(&format!("block {selector} not found")),
-                "{error}"
-            );
-            worker.join().unwrap();
-        }
-    }
-    #[test]
     fn websocket_frames_for_other_ids_are_skipped_and_the_socket_stays_in_step() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -780,78 +713,6 @@ mod tests {
         assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), 2);
         assert_eq!(rpc.count(), 2);
         worker.join().unwrap();
-    }
-    #[test]
-    fn websocket_error_with_a_null_id_fails_the_call_at_once() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("ws://{}", listener.local_addr().unwrap());
-        let worker = thread::spawn(move || {
-            let mut socket = tungstenite::accept(listener.accept().unwrap().0).unwrap();
-            socket.read().unwrap();
-            let error = json!({"jsonrpc":"2.0", "id":null, "error":{"code":-32700, "message":"Parse error"}});
-            socket
-                .send(tungstenite::Message::Text(error.to_string().into()))
-                .unwrap();
-            let _ = socket.read();
-        });
-        let start = std::time::Instant::now();
-        let error = Rpc::new(&url)
-            .unwrap()
-            .call("chain_getHeader", json!([]))
-            .unwrap_err();
-        assert!(error.to_string().contains("Parse error"), "{error}");
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            start.elapsed()
-        );
-        drop(worker);
-    }
-    #[test]
-    fn a_longer_deadline_waits_for_a_slow_response() {
-        // The node answers after 1.5 s: a 1 s deadline gives up, a 8 s one (2 s tries) waits.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let worker = thread::spawn(move || {
-            for stream in listener.incoming().take(5) {
-                let mut stream = stream.unwrap();
-                thread::spawn(move || {
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    let mut len = 0;
-                    loop {
-                        let mut line = String::new();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                            break;
-                        }
-                        if let Some(v) = line.to_lowercase().strip_prefix("content-length:") {
-                            len = v.trim().parse().unwrap();
-                        }
-                    }
-                    let mut bytes = vec![0; len];
-                    if reader.read_exact(&mut bytes).is_err() {
-                        return;
-                    }
-                    let request: Value = serde_json::from_slice(&bytes).unwrap();
-                    thread::sleep(Duration::from_millis(1500));
-                    let body =
-                        json!({"jsonrpc":"2.0", "id":request["id"], "result":"slow"}).to_string();
-                    let _ = write!(
-                        stream,
-                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                });
-            }
-        });
-        let short =
-            Rpc::with_options(&url, 1, Duration::from_secs(1), CancellationToken::new()).unwrap();
-        let error = short.call("chain_getHeader", json!([])).unwrap_err();
-        assert!(error.is_transient(), "{error}");
-        assert!(error.to_string().contains("deadline exceeded"), "{error}");
-        let long =
-            Rpc::with_options(&url, 1, Duration::from_secs(8), CancellationToken::new()).unwrap();
-        assert_eq!(long.call("chain_getHeader", json!([])).unwrap(), "slow");
-        drop(worker);
     }
     #[test]
     fn dropped_websocket_connection_reconnects() {

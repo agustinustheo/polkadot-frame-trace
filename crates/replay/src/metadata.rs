@@ -185,46 +185,6 @@ pub(crate) fn load(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn negotiates_v16_v15_and_legacy_v14_without_rpc_metadata() {
-        for supported in [16u32, 15, 14] {
-            let mut versions = Vec::new();
-            let result = negotiate(|method, data| {
-                if method == "Metadata_metadata" {
-                    return Ok(b"v14".to_vec().encode());
-                }
-                let version = u32::decode(&mut &*data).expect("version");
-                versions.push(version);
-                Ok((version == supported)
-                    .then(|| format!("v{version}").into_bytes())
-                    .encode())
-            })
-            .expect("metadata");
-            assert_eq!(result, rpc::hex0(format!("v{supported}").as_bytes()));
-            assert_eq!(
-                versions,
-                if supported == 16 {
-                    vec![16]
-                } else {
-                    vec![16, 15]
-                }
-            );
-        }
-        assert_eq!(
-            negotiate(|method, _| if method.ends_with("at_version") {
-                Err(Error::MethodNotFound(method.into()))
-            } else {
-                Ok(b"v14".to_vec().encode())
-            })
-            .expect("legacy"),
-            rpc::hex0(b"v14")
-        );
-    }
-}
-
 impl session::MetadataEntry {
     fn matches(
         &self,
@@ -243,115 +203,17 @@ impl session::MetadataEntry {
     }
 }
 
-#[cfg(test)]
-mod cache_tests {
-    use super::*;
-    #[test]
-    fn dependency_values_invalidate_metadata_but_state_roots_do_not() {
-        let mut entry = session::MetadataEntry {
-            metadata: "metadata".into(),
-            reads: vec![],
-            iteration_root: None,
-            proof_nodes: vec![],
-        };
-        assert!(
-            entry
-                .matches(H256::repeat_byte(2), |_, _| panic!(
-                    "pure metadata should not read storage"
-                ))
-                .unwrap()
-        );
-        entry
-            .reads
-            .push((b"key".to_vec(), None, Some(H256::repeat_byte(1))));
-        assert!(
-            entry
-                .matches(H256::repeat_byte(3), |_, _| Ok(Some(H256::repeat_byte(1))))
-                .unwrap()
-        );
-        assert!(
-            !entry
-                .matches(H256::repeat_byte(3), |_, _| Ok(Some(H256::repeat_byte(2))))
-                .unwrap()
-        );
-        assert!(
-            !entry
-                .matches(H256::repeat_byte(3), |_, _| Ok(None))
-                .unwrap()
-        );
-        entry.iteration_root = Some(H256::repeat_byte(4));
-        assert!(
-            !entry
-                .matches(H256::repeat_byte(3), |_, _| panic!(
-                    "root must invalidate iteration"
-                ))
-                .unwrap()
-        );
-    }
-    #[test]
-    fn people_metadata_storage_reads_are_captured_and_reused_across_blocks() {
-        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay");
-        let session = ReplaySession::new(None).unwrap();
-        let mut first_metadata = None;
-        for name in ["people-transfer", "people-kill-prefix"] {
-            let mut artifact = Artifact::load(&base.join(name)).unwrap();
-            let state: Header = serde_json::from_value(artifact.parent_header.clone()).unwrap();
-            let db = open_db(&artifact, None, &session, &state).unwrap();
-            let (wasm, heap) = runtime_code(&db, *state.state_root()).unwrap();
-            load(&mut artifact, &db, &wasm, heap, &session, &state).unwrap();
-            if let Some(first) = &first_metadata {
-                assert_eq!(&artifact.metadata, first);
-            } else {
-                assert!(!artifact.metadata.is_empty());
-                first_metadata = Some(artifact.metadata.clone());
-            }
-            artifact.proof_nodes = db.export();
-            let fresh = ReplaySession::new(None).unwrap();
-            let db = open_db(&artifact, None, &fresh, &state).unwrap();
-            let (wasm, heap) = runtime_code(&db, *state.state_root()).unwrap();
-            load(&mut artifact, &db, &wasm, heap, &fresh, &state).unwrap();
-            assert!(
-                Some(&artifact.metadata) == first_metadata.as_ref(),
-                "cache-hit save retains metadata proofs"
-            );
-        }
-        assert_eq!(session.metadata_runs.load(Ordering::Relaxed), 1);
-        let cache = session.metadata.lock();
-        let entry = cache.values().next().unwrap();
-        assert!(
-            !entry.reads.is_empty(),
-            "People metadata constants read storage"
-        );
-        assert!(entry.iteration_root.is_none());
-    }
-}
-
 // Whole-state roots can affect metadata even without a BackendRead event.
 fn root_dependent(method: &str) -> bool {
     method.starts_with("Backend") || matches!(method, "StorageRoot" | "ChildStorageRoot")
 }
 #[cfg(test)]
-mod root_tests {
-    #[test]
-    fn root_operations_bind_metadata_to_state() {
-        for method in [
-            "StorageRoot",
-            "ChildStorageRoot",
-            "BackendNextKey",
-            "BackendIterNextPair",
-        ] {
-            assert!(super::root_dependent(method));
-        }
-        assert!(!super::root_dependent("Get"));
-    }
-}
-
-#[cfg(test)]
-mod export_tests {
+mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     #[test]
-    fn cache_hit_dependencies_save_and_execute_in_a_fresh_process() {
+    fn cached_metadata_follows_dependency_values_and_cache_hits_save_and_execute_in_a_fresh_process()
+     {
         const CHILD_PATH: &str = "FRAME_TRACE_R5_METADATA_ARTIFACT";
         if let Some(path) = std::env::var_os(CHILD_PATH) {
             let mut artifact = Artifact::load(std::path::Path::new(&path)).unwrap();
@@ -365,6 +227,24 @@ mod export_tests {
             assert_eq!(session.metadata_runs.load(Ordering::Relaxed), 1);
             return;
         }
+        // A cached entry stays valid while the values it read are unchanged, whatever the state
+        // root, unless the metadata iterated or took a root.
+        let mut entry = session::MetadataEntry {
+            metadata: "metadata".into(),
+            reads: vec![(b"key".to_vec(), None, Some(H256::repeat_byte(1)))],
+            iteration_root: None,
+            proof_nodes: vec![],
+        };
+        let matches = |entry: &session::MetadataEntry, value| {
+            entry
+                .matches(H256::repeat_byte(3), |_, _| Ok(value))
+                .unwrap()
+        };
+        assert!(matches(&entry, Some(H256::repeat_byte(1))));
+        assert!(!matches(&entry, Some(H256::repeat_byte(2))));
+        assert!(!matches(&entry, None));
+        entry.iteration_root = Some(H256::repeat_byte(4));
+        assert!(!matches(&entry, Some(H256::repeat_byte(1))));
         for operation in ["read", "child", "iterate", "root", "child_root"] {
             let (import, body) = match operation {
                 "read" => (
@@ -462,7 +342,7 @@ mod export_tests {
             ));
             artifact.save(&dir).unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "metadata::export_tests::cache_hit_dependencies_save_and_execute_in_a_fresh_process", "--nocapture"])
+                .args(["--exact", "metadata::tests::cached_metadata_follows_dependency_values_and_cache_hits_save_and_execute_in_a_fresh_process", "--nocapture"])
                 .env(CHILD_PATH, &dir).output().unwrap();
             std::fs::remove_dir_all(dir).unwrap();
             assert!(

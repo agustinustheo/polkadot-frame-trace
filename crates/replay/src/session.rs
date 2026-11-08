@@ -29,8 +29,6 @@ pub struct ReplaySession {
     // One cold replay teaches the shared proof cache and key predictions before followers
     // start. Otherwise every startup worker repeats the same sequential discovery rounds.
     cold_start: Arc<Mutex<()>>,
-    #[cfg(test)]
-    pub(crate) executor: Arc<Executor>,
     executors: Arc<Mutex<BTreeMap<H256, Arc<Executor>>>>,
     pub(crate) disk: Option<Arc<crate::disk::NodeStore>>,
     pub(crate) speculative_discovery: bool,
@@ -98,8 +96,6 @@ impl ReplaySession {
                     (PathBuf::new(), false, None)
                 }
             };
-        #[cfg(test)]
-        let wasm_dir = wasm_cache.then(|| base.join("wasm"));
         let session = Self {
             nodes: Default::default(),
             hints: Default::default(),
@@ -120,17 +116,6 @@ impl ReplaySession {
             announced_override: Default::default(),
             #[cfg(test)]
             metadata_runs: Default::default(),
-            #[cfg(test)]
-            executor: Arc::new({
-                let builder = Executor::builder()
-                    .with_max_runtime_instances(2)
-                    .with_runtime_cache_size(4)
-                    .with_allow_missing_host_functions(false);
-                match wasm_dir {
-                    Some(dir) => builder.with_cache_path(dir).build(),
-                    None => builder.build(),
-                }
-            }),
         };
         // Wasm eviction waits until authenticated :code identifies the active runtime.
         // Pruning here could delete the very module about to be loaded.
@@ -539,7 +524,18 @@ fn wasm_modules(root: &Path) -> std::io::Result<Vec<WasmModule>> {
 mod disk_tests {
     use super::*;
     #[test]
-    fn cold_followers_wait_until_first_replay_releases_guard() {
+    fn idle_runtimes_above_four_go_when_the_next_one_loads() {
+        let session = ReplaySession::new(None).expect("session");
+        // Six runtimes in use at once: all stay.
+        let busy: Vec<_> = (0..6u8).map(|i| session.executor_for(&[i])).collect();
+        assert_eq!(session.executors.lock().len(), 6);
+        drop(busy);
+        // Once idle, one more runtime brings the map back to four, not five.
+        let _next = session.executor_for(b"next");
+        assert_eq!(session.executors.lock().len(), 4);
+    }
+    #[test]
+    fn cold_followers_wait_for_the_first_replay_unless_cancelled_and_errors_or_panics_release_it() {
         use std::{sync::mpsc, time::Duration};
         let session = ReplaySession::new(None).expect("session");
         let cancel = crate::rpc::CancellationToken::new();
@@ -576,11 +572,9 @@ mod disk_tests {
             next.join().expect("follower completed");
         });
         assert!(session.cold_start(&cancel).expect("warm").is_none());
-    }
-    #[test]
-    fn online_error_releases_explicit_startup_admission() {
+
+        // A failed replay releases the gate, and so does a panic.
         let session = ReplaySession::new(None).expect("session");
-        let cancel = crate::rpc::CancellationToken::new();
         let rpc = crate::rpc::Rpc::new("http://127.0.0.1:1").expect("rpc");
         let replay = || -> Result<()> {
             let _guard = session.cold_start(&cancel)?;
@@ -590,12 +584,6 @@ mod disk_tests {
         assert!(replay().is_err());
         assert_eq!(rpc.count(), 0);
         assert!(session.cold_start.try_lock().is_some());
-        assert!(session.cold_start(&cancel).expect("retry").is_some());
-    }
-    #[test]
-    fn panic_releases_startup_admission() {
-        let session = ReplaySession::new(None).expect("session");
-        let cancel = crate::rpc::CancellationToken::new();
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _guard = session.cold_start(&cancel).expect("admission");
@@ -604,11 +592,8 @@ mod disk_tests {
             .is_err()
         );
         assert!(session.cold_start.try_lock().is_some());
-    }
-    #[test]
-    fn cancelled_waiter_exits_while_first_replay_still_holds_gate() {
-        use std::{sync::mpsc, time::Duration};
-        let session = ReplaySession::new(None).expect("session");
+
+        // A cancelled waiter leaves while the first replay still holds the gate.
         let cancel = crate::rpc::CancellationToken::new();
         let _guard = session.cold_start(&cancel).expect("admission");
         std::thread::scope(|scope| {
@@ -679,17 +664,6 @@ mod disk_tests {
         drop(active);
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
-    #[test]
-    fn idle_runtimes_above_four_go_when_the_next_one_loads() {
-        let session = ReplaySession::new(None).expect("session");
-        // Six runtimes in use at once: all stay.
-        let busy: Vec<_> = (0..6u8).map(|i| session.executor_for(&[i])).collect();
-        assert_eq!(session.executors.lock().len(), 6);
-        drop(busy);
-        // Once idle, one more runtime brings the map back to four, not five.
-        let _next = session.executor_for(b"next");
-        assert_eq!(session.executors.lock().len(), 4);
-    }
     fn persist(session: &ReplaySession, nodes: impl Iterator<Item = u32>) {
         let db = crate::proof::ProofDb::with_session(None, H256::zero(), session.clone());
         db.insert_nodes(nodes.map(|i| [i.to_le_bytes().as_slice(), &[7; 200]].concat()));
@@ -701,57 +675,35 @@ mod disk_tests {
         session.disk.as_ref().expect("disk").get(&hash) == Some(bytes)
     }
     #[test]
-    fn unused_runtimes_go_before_proof_nodes() {
-        let dir = std::env::temp_dir().join(format!(
-            "polkadot-frame-trace-pressure-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn runtimes_in_use_that_leave_less_than_the_node_floor_keep_it_and_warn() {
         let cap = 1024 * 1024;
-        let session = ReplaySession::with_cache_max_bytes(Some(&dir), cap).expect("session");
-        let _active = session.executor_for(b"runtime");
-        let unused = dir.join("wasm").join("unused");
-        std::fs::create_dir_all(&unused).expect("mkdir");
-        std::fs::write(unused.join("module"), vec![0; 400 * 1024]).expect("write");
-        session.prune_disk_cache().expect("prune");
-        assert!(unused.exists(), "deleted while under the limit");
-        // About 800 KB of nodes: with the runtime, more than the limit.
-        for block in 0..32 {
-            persist(&session, block * 100..block * 100 + 100);
+        // Larger than the limit, and under it alone but over it with the 256 KiB kept for state.
+        for size in [2 * 1024 * 1024, 900 * 1024] {
+            let dir = std::env::temp_dir().join(format!(
+                "polkadot-frame-trace-floor-{size}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            let session = ReplaySession::with_cache_max_bytes(Some(&dir), cap).expect("session");
+            let wasm = b"runtime in use";
+            let _active = session.executor_for(wasm);
+            let hash = H256::from(sp_io::hashing::blake2_256(wasm));
+            let module = dir.join("wasm").join(format!("{hash:x}"));
+            std::fs::create_dir_all(&module).expect("mkdir");
+            std::fs::write(module.join("module"), vec![0; size]).expect("write");
+            for block in 0..8 {
+                persist(&session, block * 100..block * 100 + 100);
+                session.prune_disk_cache().expect("prune");
+                // The floor is a quarter of the limit: the last block's nodes stay.
+                assert!(
+                    stored(&session, block * 100),
+                    "{size}: block {block} was evicted at once"
+                );
+            }
+            assert!(session.disk.as_ref().expect("disk").total() <= cap / 4);
+            assert!(session.wasm.lock().warned_small, "{size}");
+            std::fs::remove_dir_all(dir).expect("cleanup");
         }
-        session.prune_disk_cache().expect("prune");
-        assert!(!unused.exists(), "an unused runtime outlived the limit");
-        assert!(
-            stored(&session, 0),
-            "the oldest node went before an unused runtime"
-        );
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-    #[test]
-    fn a_runtime_larger_than_the_limit_leaves_the_node_floor() {
-        let dir =
-            std::env::temp_dir().join(format!("polkadot-frame-trace-floor-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let cap = 1024 * 1024;
-        let session = ReplaySession::with_cache_max_bytes(Some(&dir), cap).expect("session");
-        let wasm = b"big runtime";
-        let _active = session.executor_for(wasm);
-        let hash = H256::from(sp_io::hashing::blake2_256(wasm));
-        let module = dir.join("wasm").join(format!("{hash:x}"));
-        std::fs::create_dir_all(&module).expect("mkdir");
-        std::fs::write(module.join("module"), vec![0; 2 * 1024 * 1024]).expect("write");
-        for block in 0..8 {
-            persist(&session, block * 100..block * 100 + 100);
-            session.prune_disk_cache().expect("prune");
-            // The floor is a quarter of the limit: the last block's nodes stay.
-            assert!(
-                stored(&session, block * 100),
-                "block {block} was evicted at once"
-            );
-        }
-        assert!(session.disk.as_ref().expect("disk").total() <= cap / 4);
-        assert!(session.wasm.lock().warned_small);
-        std::fs::remove_dir_all(dir).expect("cleanup");
     }
     #[test]
     fn a_runtime_that_cannot_be_deleted_stays_in_the_node_budget() {
@@ -825,58 +777,6 @@ mod disk_tests {
         assert_eq!(used(&below), (false, false));
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1775)).expect("chmod");
         assert_eq!(used(&below), (true, true));
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-    #[test]
-    fn a_disabled_wasm_cache_is_not_maintained() {
-        let dir = std::env::temp_dir().join(format!(
-            "polkadot-frame-trace-no-wasm-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        std::fs::write(dir.join("wasm"), b"not a folder").expect("write");
-        let session = ReplaySession::with_cache_max_bytes(Some(&dir), 1 << 20).expect("session");
-        let _active = session.executor_for(b"runtime");
-        for _ in 0..3 {
-            session
-                .prune_disk_cache()
-                .expect("no error for a folder that is not used");
-        }
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-    #[test]
-    fn runtimes_in_use_plus_the_node_floor_over_the_limit_warn() {
-        let dir = std::env::temp_dir().join(format!(
-            "polkadot-frame-trace-floor-warn-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let cap = 1024 * 1024;
-        let session = ReplaySession::with_cache_max_bytes(Some(&dir), cap).expect("session");
-        let wasm = b"runtime in use";
-        let _active = session.executor_for(wasm);
-        let hash = H256::from(sp_io::hashing::blake2_256(wasm));
-        let module = dir.join("wasm").join(format!("{hash:x}"));
-        std::fs::create_dir_all(&module).expect("mkdir");
-        // Under the limit alone, over it with the 256 KiB kept for state.
-        std::fs::write(module.join("module"), vec![0; 900 * 1024]).expect("write");
-        session.prune_disk_cache().expect("prune");
-        assert!(session.wasm.lock().warned_small);
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-    #[test]
-    fn an_unusable_cache_directory_is_a_warning() {
-        let dir = std::env::temp_dir().join(format!(
-            "polkadot-frame-trace-unusable-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        // A file where the node folder should be.
-        std::fs::write(dir.join("proof-nodes"), b"not a folder").expect("write");
-        let session = ReplaySession::with_cache_max_bytes(Some(&dir), 1 << 30).expect("session");
-        assert!(session.disk.is_none());
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }

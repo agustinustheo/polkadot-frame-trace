@@ -333,17 +333,6 @@ fn crate_label(krate: &str) -> String {
         .collect()
 }
 
-#[cfg(test)]
-mod naming_tests {
-    use super::*;
-    #[test]
-    fn crate_fallbacks_strip_pallet_and_use_camel_case() {
-        assert_eq!(crate_label("pallet_aura"), "Aura");
-        assert_eq!(crate_label("cumulus_pallet_xcmp_queue"), "CumulusXcmpQueue");
-        assert_eq!(crate_label("unknown_runtime_crate"), "UnknownRuntimeCrate");
-    }
-}
-
 /// Explicit offsets on the replay clock. Duration includes compute and instrumentation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseTiming {

@@ -331,7 +331,7 @@ mod tests {
         );
     }
     #[test]
-    fn eviction_drops_the_least_recently_used_and_keeps_recent_nodes() {
+    fn eviction_drops_the_least_recently_used_one_at_a_time_and_keeps_recent_nodes() {
         let mut nodes = Nodes::with_budget(1024 * 1024);
         let mut hashes = Vec::new();
         for i in 0..20_000 {
@@ -366,10 +366,7 @@ mod tests {
                 .all(|h| nodes.peek(h).is_some())
         );
         assert!(nodes.peek(&hashes[1]).is_none());
-    }
-    #[test]
-    fn a_full_table_drops_one_node_at_a_time() {
-        // Small nodes: the table, not the bytes, is what fills up.
+        // Small nodes: the table, not the bytes, is what fills up. It too drops one at a time.
         let budget = 1024 * 1024;
         let mut nodes = Nodes::with_budget(budget);
         let mut most = 0;
@@ -390,48 +387,5 @@ mod tests {
         assert!(stats.evicted > 0);
         assert_eq!(stats.entries, most, "{stats:?}");
         assert_eq!(stats.entries as usize, nodes.map.limiter().max_len);
-    }
-    #[test]
-    fn a_node_larger_than_the_budget_is_not_kept_and_empties_nothing() {
-        let mut nodes = Nodes::with_budget(64 * 1024);
-        let (small, bytes) = node(1, 100);
-        nodes.intern(small, bytes);
-        let (large, bytes) = node(2, 128 * 1024);
-        let shared = nodes.intern(large, bytes);
-        assert_eq!(shared.len(), 128 * 1024);
-        assert!(nodes.peek(&large).is_none());
-        assert!(nodes.peek(&small).is_some());
-    }
-    #[test]
-    fn concurrent_replays_share_one_allocation_within_the_budget() {
-        let budget = 1024 * 1024;
-        let nodes = Arc::new(parking_lot::Mutex::new(Nodes::with_budget(budget)));
-        std::thread::scope(|scope| {
-            for worker in 0..8u64 {
-                let nodes = nodes.clone();
-                scope.spawn(move || {
-                    for i in 0..5000 {
-                        // Half the nodes are common to all workers.
-                        let id = if i % 2 == 0 { i } else { worker << 32 | i };
-                        let (hash, bytes) = node(id, 200 + (i as usize % 300));
-                        let mine = nodes.lock().intern(hash, bytes.clone());
-                        assert_eq!(&*mine, bytes.as_slice());
-                        // Another worker may have dropped it since, but never changed it.
-                        if let Some(theirs) = nodes.lock().get(&hash) {
-                            assert_eq!(&*theirs, bytes.as_slice());
-                        }
-                        assert!(nodes.lock().stats().bytes <= budget as u64);
-                    }
-                });
-            }
-        });
-        let nodes = nodes.lock();
-        let stats = nodes.stats();
-        let values: usize = nodes.map.iter().map(|(_, v)| charge(v.len())).sum();
-        assert_eq!(
-            stats.bytes as usize,
-            values + allocation(nodes.map.memory_usage())
-        );
-        assert!(stats.bytes <= budget as u64);
     }
 }

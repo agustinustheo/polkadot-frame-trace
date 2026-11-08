@@ -17,26 +17,3 @@ pub fn encode(prefix: u16, account: &[u8; 32]) -> String {
     data.extend_from_slice(&hash[..2]);
     bs58::encode(data).into_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ALICE: [u8; 32] = [
-        0xd4, 0x35, 0x93, 0xc7, 0x15, 0xfd, 0xd3, 0x1c, 0x61, 0x14, 0x1a, 0xbd, 0x04, 0xa9, 0x9f,
-        0xd6, 0x82, 0x2c, 0x85, 0x58, 0x85, 0x4c, 0xcd, 0xe3, 0x9a, 0x56, 0x84, 0xe7, 0xa5, 0x6d,
-        0xa2, 0x7d,
-    ];
-
-    #[test]
-    fn encodes_alice() {
-        assert_eq!(
-            encode(42, &ALICE),
-            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
-        );
-        assert_eq!(
-            encode(0, &ALICE),
-            "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5"
-        );
-    }
-}

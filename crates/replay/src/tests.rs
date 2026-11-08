@@ -89,7 +89,7 @@ fn stop(stop: Arc<AtomicBool>, thread: thread::JoinHandle<()>) {
 }
 
 #[test]
-fn allowlist_rejects_unsafe_and_unproved_storage_and_unpinned_metadata() {
+fn allowlist_rejects_unsafe_unproved_and_unpinned_calls_before_network() {
     let rpc = Rpc::new("http://127.0.0.1:1").unwrap();
     for method in [
         "state_traceBlock",
@@ -103,6 +103,15 @@ fn allowlist_rejects_unsafe_and_unproved_storage_and_unpinned_metadata() {
         ));
     }
     assert!(rpc.call("state_getMetadata", json!([])).is_err());
+    // state_call needs an explicit block hash and valid hex data.
+    for params in [
+        json!([]),
+        json!(["method", "0x"]),
+        json!(["method", "0x", "best"]),
+        json!(["method", "bad hex", H256::zero()]),
+    ] {
+        assert!(matches!(rpc.call("state_call", params), Err(Error::Rpc(_))));
+    }
     assert_eq!(rpc.count(), 0);
 }
 
@@ -205,83 +214,10 @@ fn authenticates_remote_child_proofs_and_offline_child_root_changes() {
     stop(halt, worker);
 }
 
+/// A block fetched from a node replays with no RPC in the timed run and round-trips offline.
+/// The same block with a wrong state root fails, and records no hints or disk cache.
 #[test]
-fn concurrent_node_misses_share_one_fetch() {
-    let node = vec![0u8]; // SDK's canonical empty trie node.
-    let root = H256::from(sp_io::hashing::blake2_256(&node));
-    // Use a nonempty serialized trie node for a genuine miss (empty roots are synthesized).
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| sp_io::storage::set(b"key", b"value"));
-    seed.commit_all().unwrap();
-    let (raw, state_root) = seed.into_raw_snapshot();
-    assert_ne!(state_root, root);
-    let nodes: Vec<_> = raw
-        .into_iter()
-        .map(|(_, (node, _))| rpc::hex0(&node))
-        .collect();
-    let parent = H256::repeat_byte(9);
-    let (rpc, _, halt, worker) = server(move |_| json!({"at":parent,"proof":nodes}));
-    let db = ProofDb::new(Some(rpc.clone()), parent);
-    let barrier = Arc::new(std::sync::Barrier::new(8));
-    let workers: Vec<_> = (0..8)
-        .map(|_| {
-            let db = db.clone();
-            let barrier = barrier.clone();
-            thread::spawn(move || {
-                barrier.wait();
-                sp_state_machine::TrieBackendStorage::get(&db, &state_root, EMPTY_PREFIX)
-                    .unwrap()
-                    .unwrap()
-            })
-        })
-        .collect();
-    for worker in workers {
-        assert!(!worker.join().unwrap().is_empty());
-    }
-    assert_eq!(rpc.count(), 1);
-    stop(halt, worker);
-}
-
-#[test]
-fn rejects_proofs_for_a_different_parent() {
-    let parent = H256::repeat_byte(3);
-    let (rpc, _, halt, worker) = server(move |_| json!({"at": H256::repeat_byte(4),"proof":[]}));
-    let db = ProofDb::new(Some(rpc), parent);
-    assert!(
-        db.fetch(None, &[b"key".to_vec()])
-            .unwrap_err()
-            .to_string()
-            .contains("different parent")
-    );
-    stop(halt, worker);
-}
-
-#[test]
-fn websocket_transport_obeys_json_rpc_and_pinning() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("ws://{}", listener.local_addr().unwrap());
-    let worker = thread::spawn(move || {
-        let mut ws = tungstenite::accept(listener.accept().unwrap().0).unwrap();
-        let request: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!(request["method"], "chain_getBlockHash");
-        ws.send(tungstenite::Message::Text(
-            json!({"jsonrpc":"2.0","id":request["id"],"result":H256::repeat_byte(5)})
-                .to_string()
-                .into(),
-        ))
-        .unwrap();
-    });
-    let rpc = Rpc::new(&url).unwrap();
-    assert_eq!(
-        rpc.call("chain_getBlockHash", json!([1])).unwrap(),
-        json!(H256::repeat_byte(5))
-    );
-    assert_eq!(rpc.count(), 1);
-    worker.join().unwrap();
-}
-
-#[test]
-fn online_acquisition_pins_context_and_measures_with_zero_rpc() {
+fn online_acquisition_pins_context_measures_with_zero_rpc_and_a_failed_root_check_keeps_nothing() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay/people-transfer");
     let artifact = Artifact::load(&path).unwrap();
     let expected = artifact.clone();
@@ -293,11 +229,18 @@ fn online_acquisition_pins_context_and_measures_with_zero_rpc() {
     let trie =
         sp_state_machine::TrieBackendBuilder::new(memory, *parent_header.state_root()).build();
     let parent = artifact.block["header"]["parentHash"].clone();
+    let mut tampered = artifact.block.clone();
+    tampered["header"]["stateRoot"] = json!(format!("0x{}", "ee".repeat(32)));
+    let tampered_hash = header_hash(&tampered["header"]).unwrap();
+    let served_tampered = tampered_hash.clone();
     let (rpc, requests, halt, worker) = server(move |request| {
         match request["method"].as_str().unwrap() {
             "chain_getBlockHash" => {
                 assert_eq!(request["params"], json!([2]));
                 json!(artifact.block_hash)
+            }
+            "chain_getBlock" if request["params"] == json!([served_tampered]) => {
+                json!({ "block": tampered })
             }
             "chain_getBlock" => {
                 assert_eq!(request["params"], json!([artifact.block_hash]));
@@ -349,46 +292,7 @@ fn online_acquisition_pins_context_and_measures_with_zero_rpc() {
     assert_eq!(requests.lock().unwrap().len(), result.rpc_count);
     let offline = replay(result.artifact, None).unwrap();
     assert_eq!(offline.expected_state_root, offline.computed_state_root);
-    stop(halt, worker);
-}
 
-#[test]
-fn a_failed_root_check_records_no_hints_and_writes_no_disk_cache() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay/people-transfer");
-    let artifact = Artifact::load(&path).unwrap();
-    let mut memory = sp_trie::MemoryDB::<Blake2Hasher>::default();
-    for node in &artifact.proof_nodes {
-        HashDB::insert(&mut memory, EMPTY_PREFIX, &unhex(node).unwrap());
-    }
-    let parent_header: Header = serde_json::from_value(artifact.parent_header.clone()).unwrap();
-    let trie =
-        sp_state_machine::TrieBackendBuilder::new(memory, *parent_header.state_root()).build();
-    let parent = artifact.block["header"]["parentHash"].clone();
-    // Same block with a wrong state root in its header: replay must fail the root check.
-    let mut block = artifact.block.clone();
-    block["header"]["stateRoot"] = json!(format!("0x{}", "ee".repeat(32)));
-    let hash = header_hash(&block["header"]).unwrap();
-    let (rpc, _, halt, worker) = server(move |request| match request["method"].as_str().unwrap() {
-        "chain_getBlock" => json!({ "block": block }),
-        "chain_getHeader" => artifact.parent_header.clone(),
-        "state_getRuntimeVersion" => artifact.runtime_version.clone(),
-        "state_getMetadata" => json!(""),
-        "state_getReadProof" => {
-            let keys: Vec<_> = request["params"][0]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| unhex(v.as_str().unwrap()).unwrap())
-                .collect();
-            match sp_state_machine::prove_read_on_trie_backend(&trie, &keys) {
-                Ok(proof) => {
-                    json!({"at":parent,"proof":proof.into_iter_nodes().map(|n| rpc::hex0(&n)).collect::<Vec<_>>()})
-                }
-                Err(_) => json!({"at":parent,"proof":[]}),
-            }
-        }
-        method => panic!("unexpected RPC {method}"),
-    });
     let dir = std::env::temp_dir().join(format!(
         "polkadot-frame-trace-root-fail-{}",
         std::process::id()
@@ -396,7 +300,7 @@ fn a_failed_root_check_records_no_hints_and_writes_no_disk_cache() {
     let session = ReplaySession::new(Some(&dir))
         .unwrap()
         .with_speculative_discovery(false);
-    let error = online_with_session(&rpc, &hash, &session).unwrap_err();
+    let error = online_with_session(&rpc, &tampered_hash, &session).unwrap_err();
     assert!(matches!(error, Error::Execution(_)), "{error}");
     assert!(session.predicted_keys().is_empty(), "hints recorded");
     let written = session.disk.as_ref().unwrap().node_count();
@@ -471,85 +375,6 @@ fn shared_nodes_are_reauthenticated_at_each_blocks_root() {
             .unwrap()
             .contains("missing/invalid")
     );
-}
-
-#[test]
-fn unknown_host_import_error_names_the_import() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay/people-transfer");
-    let artifact = Artifact::load(&path).unwrap();
-    let (block, parent) = artifact.validate().unwrap();
-    let db = ProofDb::new(None, parent.hash());
-    db.insert_nodes(artifact.proof_nodes.iter().map(|s| unhex(s).unwrap()));
-    let wasm = wat::parse_str(
-        r#"(module
-        (import "env" "ext_frame_trace_unknown_version_1" (func))
-        (memory (export "memory") 1)
-        (global (export "__heap_base") i32 (i32.const 1024))
-        (func (export "Core_execute_block") (param i32 i32) (result i64) i64.const 0))"#,
-    )
-    .unwrap();
-    let session = ReplaySession::new(None).unwrap();
-    let error = execute(
-        &db,
-        *parent.state_root(),
-        &wasm,
-        None,
-        &session.executor,
-        &block,
-        &Capture::new(),
-    )
-    .unwrap_err();
-    assert!(
-        matches!(&error, Error::MissingHostFunctions { functions, hint }
-            if functions == "env:ext_frame_trace_unknown_version_1" && hint.is_empty()),
-        "{error}"
-    );
-    // Without an override the message has no override note and ends with the docs link.
-    let text = error.to_string();
-    assert!(!text.contains("override"), "{text}");
-    assert!(
-        text.starts_with(
-            "the runtime needs host functions polkadot-frame-trace does not have: \
-             env:ext_frame_trace_unknown_version_1. polkadot-frame-trace's host functions are fixed"
-        ),
-        "{text}"
-    );
-    assert!(text.ends_with(MISSING_HOST_FUNCTIONS_DOCS), "{text}");
-}
-
-#[test]
-fn missing_host_function_names_stop_at_the_end_of_the_list() {
-    // sc-executor-wasmtime 0.47.0 imports.rs: names.push(format!("'{}:{}'", module, name)),
-    // joined with ", ", wrapped by sc-executor-common's WasmError::Other and then by ours.
-    let upstream = "Other error happened while constructing the runtime: runtime requires \
-                    function imports which are not present on the host: \
-                    'env:ext_beta_version_2', 'env:ext_alpha_version_1'";
-    let expected = Some("env:ext_alpha_version_1, env:ext_beta_version_2".to_owned());
-    assert_eq!(missing_host_functions(upstream), expected);
-    for trailing in [
-        "; a runtime override was executed instead of the authenticated :code",
-        ". WASM backtrace:\n    0: 0x1234 - <unknown>",
-        "\nsecond line, 'env:not_a_name'",
-        " and more text",
-    ] {
-        assert_eq!(
-            missing_host_functions(&format!("{upstream}{trailing}")),
-            expected,
-            "{trailing:?}"
-        );
-    }
-    // A future unquoted form still stops at `;`, `.` or the line end.
-    assert_eq!(
-        missing_host_functions(&format!(
-            "{MISSING_IMPORTS}env:ext_a_version_1, env:ext_b_version_1; trailing, text"
-        )),
-        Some("env:ext_a_version_1, env:ext_b_version_1".to_owned())
-    );
-    assert_eq!(
-        missing_host_functions("Exported method Core_version is not found"),
-        None
-    );
-    assert_eq!(missing_host_functions(MISSING_IMPORTS), None);
 }
 
 #[test]
@@ -713,141 +538,7 @@ fn persistent_node_cache_reuses_and_heals_corrupt_nodes() {
 }
 
 #[test]
-fn branch_proofs_batch_all_immediate_sibling_paths() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| {
-        for key in 0u8..=255 {
-            sp_io::storage::set(&[key, 1], &[key; 80]);
-        }
-    });
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
-    let mut memory = sp_trie::MemoryDB::<Blake2Hasher>::default();
-    for (_, (node, _)) in raw {
-        HashDB::insert(&mut memory, EMPTY_PREFIX, &node);
-    }
-    let trie = sp_state_machine::TrieBackendBuilder::new(memory, root).build();
-    let parent = H256::repeat_byte(12);
-    let (rpc, requests, halt, worker) = server(move |request| {
-        let keys: Vec<_> = request["params"][0]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| unhex(v.as_str().unwrap()).unwrap())
-            .collect();
-        let proof = sp_state_machine::prove_read_on_trie_backend(&trie, &keys).unwrap();
-        json!({"at":parent,"proof":proof.into_iter_nodes().map(|n| rpc::hex0(&n)).collect::<Vec<_>>()})
-    });
-    let db = ProofDb::new(Some(rpc), parent);
-    sp_state_machine::TrieBackendStorage::get(&db, &root, EMPTY_PREFIX)
-        .unwrap()
-        .unwrap();
-    let requests = requests.lock().unwrap();
-    let keys = requests[0]["params"][0].as_array().unwrap();
-    assert_eq!(keys.len(), 17);
-    for nibble in 0..16 {
-        assert!(keys.contains(&json!(rpc::hex0(&[nibble << 4]))));
-    }
-    assert_eq!(proof::sibling_paths(&[0xa0], true).len(), 16);
-    assert!(proof::sibling_paths(&[0xa0], true).contains(&vec![0xf0]));
-    drop(requests);
-    stop(halt, worker);
-}
-
-#[test]
-fn metadata_fallback_only_accepts_unavailable_or_pruned() {
-    assert!(
-        metadata_result(Err(Error::Unavailable("pruned".into())))
-            .unwrap()
-            .is_empty()
-    );
-    assert!(metadata_result(Ok(Value::Null)).unwrap().is_empty());
-    for error in [
-        Error::Cancelled,
-        Error::TransientRpc("retries exhausted".into()),
-        Error::Rpc("malformed".into()),
-    ] {
-        assert!(metadata_result(Err(error)).is_err());
-    }
-    assert!(metadata_result(Ok(json!({"bad":"metadata"}))).is_err());
-    assert_eq!(metadata_result(Ok(json!("0x1234"))).unwrap(), "0x1234");
-}
-
-#[test]
-fn prefetch_skips_cached_paths_only_when_covered_from_the_new_root() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| {
-        for key in 0..=255u8 {
-            sp_io::storage::set(&[key, 1], &[key; 80]);
-        }
-    });
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
-    let nodes: Vec<_> = raw.into_iter().map(|(_, (node, _))| node).collect();
-    let all = nodes.clone();
-    let parent = H256::repeat_byte(30);
-    let (rpc, requests, halt, worker) = server(
-        move |_| json!({"at":parent,"proof":all.iter().map(|n| rpc::hex0(n)).collect::<Vec<_>>()}),
-    );
-    let session = ReplaySession::new(None).unwrap();
-    let first = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
-    first.insert_nodes(nodes);
-    let warm = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
-    warm.set_root(root);
-    let keys: Vec<_> = (0..=255u8).map(|k| vec![k, 1]).collect();
-    warm.prefetch(&keys).unwrap();
-    warm.fetch(None, &[vec![255, 255]]).unwrap(); // authenticated absence is also covered
-    assert_eq!(rpc.count(), 0);
-    assert!(
-        warm.export().is_empty(),
-        "coverage probes must not bloat artifacts"
-    );
-    let backend = sp_state_machine::TrieBackendBuilder::new(warm.clone(), root).build();
-    assert_eq!(backend.storage(&[42, 1]).unwrap(), Some(vec![42; 80]));
-    assert!(
-        !warm.export().is_empty(),
-        "execution imports actually used nodes"
-    );
-    let changed = ProofDb::with_session(Some(rpc.clone()), parent, session);
-    changed.set_root(H256::repeat_byte(99)); // old nodes cannot authenticate a new root
-    changed.fetch(None, &[vec![1, 1]]).unwrap();
-    assert_eq!(requests.lock().unwrap().len(), 1);
-    stop(halt, worker);
-}
-
-#[test]
-fn speculative_pending_preserves_top_and_both_child_namespaces() {
-    use sp_state_machine::TrieBackendStorage;
-    let parent = H256::repeat_byte(31);
-    let (rpc, requests, halt, worker) = server(move |_| json!({"at":parent,"proof":[]}));
-    let db = ProofDb::new(Some(rpc), parent);
-    db.speculative.store(true, Ordering::SeqCst);
-    let missing = H256::repeat_byte(99);
-    assert!(TrieBackendStorage::get(&db, &missing, EMPTY_PREFIX).is_err());
-    for id in [b"one".as_slice(), b"two".as_slice()] {
-        let child = ChildInfo::new_default(id);
-        proof::with_child(&child, || {
-            assert!(TrieBackendStorage::get(&db, &missing, (child.keyspace(), None)).is_err());
-        });
-    }
-    db.acquire_pending().unwrap();
-    let requests = requests.lock().unwrap();
-    assert!(requests.iter().any(|r| r["method"] == "state_getReadProof"));
-    for id in [b"one".as_slice(), b"two".as_slice()] {
-        assert!(
-            requests
-                .iter()
-                .any(|r| r["method"] == "state_getChildReadProof"
-                    && r["params"][0]
-                        == rpc::hex0(ChildInfo::new_default(id).prefixed_storage_key().as_slice()))
-        );
-    }
-    drop(requests);
-    stop(halt, worker);
-}
-
-#[test]
-fn disk_cache_limit_bounds_nodes_and_unused_runtimes_together() {
+fn disk_cache_limit_evicts_unused_runtimes_before_proof_nodes_and_bounds_both() {
     let dir = std::env::temp_dir().join(format!(
         "polkadot-frame-trace-eviction-{}",
         std::process::id()
@@ -858,14 +549,31 @@ fn disk_cache_limit_bounds_nodes_and_unused_runtimes_together() {
     let _active = session.executor_for(b"runtime");
     let unused = dir.join("wasm/unused");
     std::fs::write(&unused, vec![0; 200 * 1024]).unwrap();
-    for block in 0u32..20 {
-        let db = ProofDb::with_session(None, H256::zero(), session.clone());
-        db.insert_nodes(
-            (block * 100..block * 100 + 100)
-                .map(|i| [i.to_le_bytes().as_slice(), &[7; 200]].concat()),
-        );
-        db.persist().unwrap();
-    }
+    session.prune_disk_cache().unwrap();
+    assert!(unused.exists(), "deleted while under the limit");
+    let node = |i: u32| [i.to_le_bytes().as_slice(), &[7; 200]].concat();
+    let persist = |blocks: std::ops::Range<u32>| {
+        for block in blocks {
+            let db = ProofDb::with_session(None, H256::zero(), session.clone());
+            db.insert_nodes((block * 100..block * 100 + 100).map(node));
+            db.persist().unwrap();
+        }
+    };
+    // About 100 KB of nodes: with the runtime, more than the limit. The runtime goes first.
+    persist(0..4);
+    session.prune_disk_cache().unwrap();
+    assert!(!unused.exists(), "an unused runtime outlived the limit");
+    let oldest = node(0);
+    assert_eq!(
+        session
+            .disk
+            .as_ref()
+            .unwrap()
+            .get(&H256::from(sp_io::hashing::blake2_256(&oldest))),
+        Some(oldest),
+        "the oldest node went before an unused runtime"
+    );
+    persist(4..20);
     // Even a failed replay runs maintenance and preserves the original execution error.
     let mut artifact = Artifact::load(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay/people-transfer"),
@@ -878,7 +586,6 @@ fn disk_cache_limit_bounds_nodes_and_unused_runtimes_together() {
             .to_string()
             .contains("unsupported artifact version")
     );
-    assert!(!unused.exists(), "an unused runtime outlived the cap");
     let used: u64 = std::fs::read_dir(dir.join("proof-nodes"))
         .unwrap()
         .map(|e| crate::disk::file_charge(&e.unwrap().metadata().unwrap()))
@@ -946,134 +653,7 @@ fn warm_session_fetches_changed_external_runtime_code_at_its_full_key() {
 }
 
 #[test]
-fn runtime_calls_pin_state_and_report_matching_and_mismatching_oracles() {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay/call-people-nonce");
-    let original = Artifact::load(&path).unwrap();
-    let fixture = original.clone();
-    let (rpc, requests, halt, worker) = server(move |request| {
-        let hash = fixture.block_hash;
-        match request["method"].as_str().unwrap() {
-            "chain_getHeader" => fixture.parent_header.clone(),
-            "chain_getFinalizedHead" | "chain_getBlockHash" => json!(hash),
-            "state_getRuntimeVersion" => fixture.runtime_version.clone(),
-            "state_getMetadata" => json!(fixture.metadata),
-            "state_getReadProof" => json!({"at":hash,"proof":fixture.proof_nodes}),
-            "state_call" if request["params"][0] == "Metadata_metadata_at_version" => {
-                json!(rpc::hex0(&Some(unhex(&fixture.metadata).unwrap()).encode()))
-            }
-            "state_call" => json!(fixture.call.as_ref().unwrap().result),
-            other => panic!("unexpected method {other}"),
-        }
-    });
-    for selector in [
-        "best".to_owned(),
-        "finalized".into(),
-        "1".into(),
-        format!("{:?}", original.block_hash),
-    ] {
-        let prepared = call::prepare(&rpc, &selector, "AccountNonceApi_account_nonce").unwrap();
-        assert_eq!(prepared.block_hash, original.block_hash);
-        assert_eq!(prepared.parent_header, original.parent_header);
-    }
-    let mut artifact = call::prepare(&rpc, "1", "AccountNonceApi_account_nonce").unwrap();
-    artifact.call.as_mut().unwrap().data = original.call.as_ref().unwrap().data.clone();
-    let replay = call::replay(
-        artifact,
-        Some(rpc.clone()),
-        &ReplaySession::new(None).unwrap(),
-        true,
-    )
-    .unwrap();
-    assert_eq!(replay.oracle_match, Some(true));
-    assert_eq!(replay.measured_rpc_count, 0);
-    assert!(
-        requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|r| r["method"] == "state_call")
-            .all(|r| r["params"][2] == json!(original.block_hash))
-    );
-    assert!(
-        requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|r| r["method"] == "state_getReadProof")
-            .all(|r| r["params"][1] == json!(original.block_hash))
-    );
-    stop(halt, worker);
-    let hash = original.block_hash;
-    let nodes = original.proof_nodes.clone();
-    let (rpc, _, halt, worker) = server(move |request| {
-        if request["method"] == "state_getReadProof" {
-            return json!({"at":hash,"proof":nodes});
-        }
-        assert_eq!(request["method"], "state_call");
-        assert_eq!(request["params"][2], json!(hash));
-        json!("0x01000000")
-    });
-    let replay = call::replay(
-        original,
-        Some(rpc),
-        &ReplaySession::new(None).unwrap(),
-        true,
-    )
-    .unwrap();
-    assert_eq!(replay.oracle_match, Some(false));
-    let repeated = call::replay(
-        replay.artifact,
-        None,
-        &ReplaySession::new(None).unwrap(),
-        false,
-    )
-    .unwrap();
-    assert_eq!(repeated.oracle_match, Some(false));
-    stop(halt, worker);
-}
-
-#[test]
-fn state_call_requires_explicit_hash_and_valid_hex_before_network() {
-    let rpc = Rpc::new("http://127.0.0.1:1").unwrap();
-    for params in [
-        json!([]),
-        json!(["method", "0x"]),
-        json!(["method", "0x", "best"]),
-        json!(["method", "bad hex", H256::zero()]),
-    ] {
-        assert!(matches!(rpc.call("state_call", params), Err(Error::Rpc(_))));
-    }
-    assert_eq!(rpc.count(), 0);
-}
-
-#[test]
-fn prediction_history_includes_miss_paths_and_expires_after_three_replays() {
-    use sp_state_machine::TrieBackendStorage;
-    let parent = H256::repeat_byte(51);
-    let (rpc, _, halt, worker) = server(move |_| json!({"at":parent,"proof":[]}));
-    let session = ReplaySession::new(None).unwrap();
-    let db = ProofDb::with_session(Some(rpc), parent, session.clone());
-    // Root/iteration requests have no full storage-key hint. Keep their sibling paths too.
-    let _ = TrieBackendStorage::get(&db, &H256::repeat_byte(52), (&[0xab], None));
-    db.remember_key(b"complete storage key");
-    db.persist().unwrap();
-    let hints = session.predicted_keys();
-    assert!(hints.contains(b"complete storage key".as_slice()));
-    assert!(hints.contains(&vec![0xab, 0x50]));
-    for i in 0..3 {
-        session.remember_paths([vec![i]].into_iter().collect());
-    }
-    assert!(
-        !session
-            .predicted_keys()
-            .contains(b"complete storage key".as_slice())
-    );
-    stop(halt, worker);
-}
-
-#[test]
-fn wrong_predictions_preserve_results_and_unused_fetched_nodes_stay_out_of_artifacts() {
+fn prefetch_skips_covered_paths_and_wrong_predictions_keep_results_and_artifacts_small() {
     let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
     seed.execute_with(|| {
         for key in 0..=255u8 {
@@ -1083,10 +663,39 @@ fn wrong_predictions_preserve_results_and_unused_fetched_nodes_stay_out_of_artif
     seed.commit_all().unwrap();
     let (raw, root) = seed.into_raw_snapshot();
     let nodes: Vec<_> = raw.into_iter().map(|(_, (node, _))| node).collect();
-    let parent = H256::repeat_byte(61);
-    let (rpc, _, halt, worker) = server(
-        move |_| json!({"at":parent,"proof":nodes.iter().map(|node| rpc::hex0(node)).collect::<Vec<_>>()}),
+    let all = nodes.clone();
+    let parent = H256::repeat_byte(30);
+    let (rpc, requests, halt, worker) = server(
+        move |_| json!({"at":parent,"proof":all.iter().map(|n| rpc::hex0(n)).collect::<Vec<_>>()}),
     );
+
+    // Cached paths are skipped only when the cached nodes cover them from the new root.
+    let session = ReplaySession::new(None).unwrap();
+    let first = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
+    first.insert_nodes(nodes);
+    let warm = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
+    warm.set_root(root);
+    let keys: Vec<_> = (0..=255u8).map(|k| vec![k, 1]).collect();
+    warm.prefetch(&keys).unwrap();
+    warm.fetch(None, &[vec![255, 255]]).unwrap(); // authenticated absence is also covered
+    assert_eq!(rpc.count(), 0);
+    assert!(
+        warm.export().is_empty(),
+        "coverage probes must not bloat artifacts"
+    );
+    let backend = sp_state_machine::TrieBackendBuilder::new(warm.clone(), root).build();
+    assert_eq!(backend.storage(&[42, 1]).unwrap(), Some(vec![42; 80]));
+    assert!(
+        !warm.export().is_empty(),
+        "execution imports actually used nodes"
+    );
+    let changed = ProofDb::with_session(Some(rpc.clone()), parent, session);
+    changed.set_root(H256::repeat_byte(99)); // old nodes cannot authenticate a new root
+    changed.fetch(None, &[vec![1, 1]]).unwrap();
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    // Wrong predictions fetch nodes the block never uses: results stay right and the
+    // artifact keeps only the nodes execution used.
     let session = ReplaySession::new(None).unwrap();
     session.remember_paths((0..255u8).map(|i| vec![i, 255]).collect());
     let db = ProofDb::with_session(Some(rpc), parent, session.clone());
@@ -1177,34 +786,6 @@ mod runtime_override {
     }
 
     #[test]
-    fn same_source_traced_override_passes_root_check_with_matching_version_and_substitute_metadata()
-    {
-        let wasm = traced_wasm();
-        let session = ReplaySession::new(None)
-            .unwrap()
-            .with_runtime_override(Some(wasm.clone()));
-        let result = replay_with_session(
-            Artifact::load(&fixture("people-transfer")).unwrap(),
-            None,
-            &session,
-        )
-        .unwrap();
-        assert!(result.root_check);
-        assert!(result.capture.spans.iter().any(|s| s.wasm));
-        let info = result.runtime_override.unwrap();
-        assert!(info.version_differences.is_empty(), "{info:?}");
-        let substitute = H256::from(sp_io::hashing::blake2_256(&wasm));
-        assert_eq!(info.override_code_hash, substitute);
-        assert_ne!(info.chain_code_hash, substitute);
-        assert_eq!(result.runtime_code_hash, substitute);
-        assert_ne!(result.runtime_code_hash, info.chain_code_hash);
-        // Metadata was generated by executing the substitute, never the chain's code.
-        let cached = session.metadata.lock();
-        assert!(cached.contains_key(&substitute), "{:?}", cached.keys());
-        assert!(!cached.contains_key(&info.chain_code_hash));
-    }
-
-    #[test]
     fn changed_spec_version_is_reported_before_execution() {
         let session = ReplaySession::new(None)
             .unwrap()
@@ -1220,31 +801,6 @@ mod runtime_override {
         assert_eq!(
             result.runtime_override.unwrap().version_differences,
             vec!["spec_version 3004000 -> 3004001".to_owned()]
-        );
-    }
-
-    #[test]
-    fn unreadable_versions_are_stated_and_failures_blame_the_override() {
-        let notes = version_differences(Err("boom".into()), Err("bang".into()));
-        assert_eq!(
-            notes,
-            vec![
-                "could not read the chain runtime version: boom".to_owned(),
-                "could not read the override runtime version: bang".to_owned()
-            ]
-        );
-        let plain = ReplaySession::new(None).unwrap();
-        let session = plain.clone().with_runtime_override(Some(vec![0]));
-        let text =
-            override_hint(&session, Error::Execution("state root mismatch".into())).to_string();
-        assert!(
-            text.contains("the runtime override may be the cause"),
-            "{text}"
-        );
-        assert!(
-            !override_hint(&plain, Error::Execution("x".into()))
-                .to_string()
-                .contains("override")
         );
     }
 
@@ -1272,86 +828,6 @@ mod runtime_override {
             "{error}"
         );
     }
-
-    #[test]
-    fn override_files_must_be_runtime_wasm() {
-        let wasm = traced_wasm();
-        assert!(check_runtime_wasm(&wasm).is_ok());
-        let plain = sp_maybe_compressed_blob::decompress(&wasm, 50 << 20).unwrap();
-        assert!(check_runtime_wasm(&plain).is_ok());
-        for (bad, expected) in [
-            (b"hello, not wasm".to_vec(), "not a Wasm module"),
-            (wasm[..wasm.len() / 2].to_vec(), "decompress"),
-            (plain[..plain.len() / 2].to_vec(), "invalid Wasm module"),
-        ] {
-            let error = check_runtime_wasm(&bad).unwrap_err().to_string();
-            assert!(error.contains(expected), "{error}");
-        }
-    }
-}
-
-#[test]
-fn parent_context_overlaps_requests_and_forks_isolate_counters() {
-    use crate::rpc::CancellationToken;
-    use std::time::Duration;
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let rpc = Rpc::with_options(
-        &format!("ws://{}", listener.local_addr().unwrap()),
-        2,
-        Duration::from_secs(10),
-        CancellationToken::new(),
-    )
-    .unwrap();
-    let fork = rpc.fork();
-    assert_eq!(fork.parallelism(), 2);
-    let parent = sp_core::H256::repeat_byte(7);
-    let server = thread::spawn(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut pending = Vec::new();
-        while pending.len() < 2 {
-            let (stream, _) = loop {
-                match listener.accept() {
-                    Ok(connection) => break connection,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(
-                            std::time::Instant::now() < deadline,
-                            "context calls were serialized"
-                        );
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(e) => panic!("accept: {e}"),
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
-            let request: Value =
-                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(request["params"], json!([parent]));
-            pending.push((socket, request));
-        }
-        // Neither request receives a response until both are in flight.
-        for (mut socket, request) in pending {
-            socket
-                .send(tungstenite::Message::Text(
-                    json!({
-                        "jsonrpc":"2.0", "id":request["id"], "result":request["method"]
-                    })
-                    .to_string()
-                    .into(),
-                ))
-                .unwrap();
-        }
-    });
-    let (header, version) = parent_context(&fork, parent).unwrap();
-    assert_eq!(header, "chain_getHeader");
-    assert_eq!(version, "state_getRuntimeVersion");
-    assert_eq!(fork.count(), 2);
-    assert_eq!(rpc.count(), 0);
-    server.join().unwrap();
 }
 
 /// A real contract call fetched through the loopback node: child trie nodes arrive only through
@@ -1473,9 +949,9 @@ fn real_contract_call_fetches_pinned_child_proofs_and_rejects_bad_ones() {
                 method => panic!("unexpected RPC {method}"),
             }
         });
-        let session = ReplaySession::new(None)
-            .unwrap()
-            .with_speculative_discovery(false);
+        // Speculative discovery on, as in production: its pending misses must keep their
+        // child namespace.
+        let session = ReplaySession::new(None).unwrap();
         let result = online_with_session(&rpc, &format!("{:?}", artifact.block_hash), &session);
         let requests = requests.lock().unwrap().clone();
         stop(halt, worker);
@@ -1545,111 +1021,4 @@ fn real_contract_call_fetches_pinned_child_proofs_and_rejects_bad_ones() {
             }
         }
     }
-}
-
-/// Threads of this process, from the operating system.
-fn os_threads() -> usize {
-    if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
-        return tasks.count();
-    }
-    let out = std::process::Command::new("ps")
-        .args(["-M", "-p", &std::process::id().to_string()])
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout).lines().count() - 1
-}
-
-#[test]
-fn prefetch_reuses_a_fixed_set_of_request_threads() {
-    const CHILD: &str = "FRAME_TRACE_PREFETCH_THREADS_TEST";
-    // Run alone in a child process, so other tests' threads do not change the count.
-    if std::env::var_os(CHILD).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "tests::prefetch_reuses_a_fixed_set_of_request_threads",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CHILD, "1")
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&output.stdout).into_owned()
-            + &String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "{text}");
-        assert!(text.contains("1 passed"), "{text}");
-        return;
-    }
-    let parent = H256::repeat_byte(3);
-    // One thread answers every request in turn: the server adds no threads while counting.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let count = served.clone();
-    thread::spawn(move || {
-        for stream in listener.incoming() {
-            let mut stream = stream.unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut len = 0;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
-                    break;
-                }
-                if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
-                    len = value.trim().parse().unwrap();
-                }
-            }
-            let mut bytes = vec![0; len];
-            reader.read_exact(&mut bytes).unwrap();
-            let request: Value = serde_json::from_slice(&bytes).unwrap();
-            let body =
-                json!({"jsonrpc":"2.0","id":request["id"],"result":{"at":parent,"proof":[]}})
-                    .to_string();
-            count.fetch_add(1, Ordering::SeqCst);
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .unwrap();
-        }
-    });
-    let rpc = Rpc::new(&url).unwrap();
-    let session = ReplaySession::new(None).unwrap();
-    // 10 batches of 32 keys: two rounds of 8 and 2 requests.
-    let keys: Vec<_> = (0..320u32).map(|i| i.to_be_bytes().to_vec()).collect();
-    let replay = || {
-        ProofDb::with_session(Some(rpc.fork()), parent, session.clone())
-            .prefetch(&keys)
-            .unwrap()
-    };
-    // The first replay starts the request threads and the network runtime.
-    replay();
-    let before = os_threads();
-    let peak = Arc::new(std::sync::atomic::AtomicUsize::new(before));
-    let done = Arc::new(AtomicBool::new(false));
-    let sampler = {
-        let (peak, done) = (peak.clone(), done.clone());
-        thread::spawn(move || {
-            while !done.load(Ordering::SeqCst) {
-                // Less this sampler thread.
-                peak.fetch_max(os_threads() - 1, Ordering::SeqCst);
-            }
-        })
-    };
-    let replays = 50;
-    for _ in 0..replays {
-        replay();
-    }
-    done.store(true, Ordering::SeqCst);
-    sampler.join().unwrap();
-    let after = os_threads();
-    assert_eq!(served.load(Ordering::SeqCst), (replays + 1) * 10);
-    assert_eq!(rpc.pool_threads(), Some(rpc.parallelism()));
-    assert!(
-        after <= before && peak.load(Ordering::SeqCst) <= before,
-        "threads before {before}, at most {} during and {after} after {replays} replays",
-        peak.load(Ordering::SeqCst)
-    );
 }

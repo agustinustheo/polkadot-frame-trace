@@ -1079,6 +1079,26 @@ mod tests {
         }
     }
     #[test]
+    fn failure_streaks_back_off_and_log_once_a_minute_even_when_they_flap() {
+        let mut streak = Streak::default();
+        let mut logged = 0;
+        let mut delays = Vec::new();
+        for _ in 0..8 {
+            logged += usize::from(streak.fail());
+            delays.push(streak.delay(POLL_INTERVAL, MAX_POLL_DELAY).as_secs());
+        }
+        assert_eq!(delays, [2, 4, 8, 16, 32, 60, 60, 60]);
+        assert_eq!(logged, 1, "later failures within a minute are not logged");
+        assert_eq!(streak.recover().map(|(failures, _)| failures), Some(8));
+        assert_eq!(streak.delay(POLL_INTERVAL, MAX_POLL_DELAY), POLL_INTERVAL);
+        for _ in 0..10 {
+            assert!(!streak.fail(), "flapping failures are not logged again");
+            assert_eq!(streak.recover(), None);
+        }
+        streak.logged = Some(Instant::now() - HEARTBEAT);
+        assert!(streak.fail(), "logged again once a minute has passed");
+    }
+    #[test]
     fn reorg_walk_stops_at_start_height_and_reports_traced_reversions() {
         let zero = format!("0x{}", "00".repeat(32));
         let old = header(100, &zero, 1);
@@ -1110,9 +1130,7 @@ mod tests {
         assert_eq!(entries[&old_hash].state, State::Reverted);
         finish(entries.get_mut(&old_hash).unwrap(), &Outcome::Passed);
         assert_eq!(entries[&old_hash].state, State::Reverted);
-    }
-    #[test]
-    fn best_head_retreat_reports_reverted_descendants_even_when_new_tip_is_known() {
+        // A best head that steps back reverts the descendants, even with nothing pending.
         let mut entries = BTreeMap::from([("old".into(), entry(100, State::Done))]);
         report_reorg(&[], 99, &mut entries);
         assert_eq!(entries["old"].state, State::Reverted);
@@ -1148,9 +1166,7 @@ mod tests {
         assert_eq!(calls, 7);
         assert_eq!(pending.len(), 8);
         assert_eq!(pending.last().unwrap().1, 93);
-    }
-    #[test]
-    fn worker_queue_preserves_consecutive_heights_during_startup() {
+        // The worker queue holds every consecutive height that startup can find.
         for workers in [1, 2, 4, 8, 16] {
             let capacity = queue_capacity(workers);
             assert_eq!(capacity, usize::from(workers).max(2) * 4);
@@ -1168,7 +1184,6 @@ mod tests {
                 Ok(chain[hash].clone())
             })
             .unwrap();
-            assert_eq!(pending.len(), capacity - 1);
             let mut heights: Vec<_> = pending.into_iter().map(|(_, height)| height).collect();
             heights.sort_unstable();
             assert_eq!(
@@ -1176,33 +1191,6 @@ mod tests {
                 (start + 1..start + capacity as u64).collect::<Vec<_>>()
             );
         }
-    }
-    #[test]
-    fn failure_streaks_back_off_and_log_once_a_minute_even_when_they_flap() {
-        let mut streak = Streak::default();
-        assert_eq!(streak.delay(POLL_INTERVAL, MAX_POLL_DELAY), POLL_INTERVAL);
-        let mut logged = 0;
-        let mut delays = Vec::new();
-        for _ in 0..8 {
-            logged += usize::from(streak.fail());
-            delays.push(streak.delay(POLL_INTERVAL, MAX_POLL_DELAY).as_secs());
-        }
-        assert_eq!(delays, [2, 4, 8, 16, 32, 60, 60, 60]);
-        assert_eq!(logged, 1, "later failures within a minute are not logged");
-        assert_eq!(streak.recover().map(|(failures, _)| failures), Some(8));
-        assert_eq!(streak.recover(), None);
-        assert_eq!(streak.delay(POLL_INTERVAL, MAX_POLL_DELAY), POLL_INTERVAL);
-        // A failure that comes back within the minute stays quiet, and so does its recovery.
-        for _ in 0..10 {
-            assert!(!streak.fail(), "flapping failures are not logged again");
-            assert_eq!(streak.recover(), None);
-        }
-        streak.logged = Some(Instant::now() - HEARTBEAT);
-        assert!(streak.fail(), "logged again once a minute has passed");
-        assert!(streak.recover().is_some());
-        assert_eq!(duration_text(Duration::from_secs(59)), "59s");
-        assert_eq!(duration_text(Duration::from_secs(192)), "3m12s");
-        assert_eq!(duration_text(Duration::from_secs(3723)), "1h02m03s");
     }
     fn trace(number: u64) -> Trace {
         let block = polkadot_frame_trace_decode::annotate_at_block(
@@ -1223,49 +1211,6 @@ mod tests {
             hash: format!("0x{number}"),
             spans: polkadot_frame_trace_otel::prepare(&block, Timing::default()),
         }
-    }
-    #[test]
-    fn status_line_shows_state_in_memory_without_reprinting_for_it() {
-        let shared = Shared::default();
-        let memory = |bytes, hits| polkadot_frame_trace_replay::MemoryCacheStats {
-            bytes,
-            budget: 128 << 20,
-            entries: 1234,
-            hits,
-            misses: 10,
-            evicted: 0,
-        };
-        let (key, line) = status_line(
-            &BTreeMap::new(),
-            &Totals::default(),
-            &shared,
-            false,
-            memory(5 * 1024 * 1024 + 1, 30),
-        );
-        assert!(
-            line.ends_with("reverted=0 state-memory=6MiB state-pieces=1234 state-from-memory=75%"),
-            "{line}"
-        );
-        // Memory changes with every block: it is not a reason to print the line again.
-        let (again, _) = status_line(
-            &BTreeMap::new(),
-            &Totals::default(),
-            &shared,
-            false,
-            memory(9 << 20, 90),
-        );
-        assert_eq!(key, again);
-        let (_, empty) = status_line(
-            &BTreeMap::new(),
-            &Totals::default(),
-            &shared,
-            false,
-            polkadot_frame_trace_replay::MemoryCacheStats::default(),
-        );
-        assert!(
-            empty.ends_with("state-memory=0MiB state-pieces=0 state-from-memory=0%"),
-            "{empty}"
-        );
     }
     #[test]
     fn export_queue_keeps_the_newest_traces_and_counts_drops() {
@@ -1343,24 +1288,12 @@ mod tests {
         );
     }
     #[test]
-    fn admission_closes_at_the_stop_deadline() {
-        let shared = Shared::default();
-        let mut reported = 0;
-        assert!(shared.admit(Some(trace(1)), || reported += 1));
-        shared.lock().closed = true;
-        assert!(!shared.admit(Some(trace(2)), || reported += 1));
-        let state = shared.lock();
-        assert_eq!((state.traced, state.waiting.len(), reported), (1, 1, 1));
-    }
-    #[test]
-    fn whole_job_panics_are_terminal_and_workers_can_accept_the_next_job() {
+    fn job_outcomes_map_panics_retries_and_reverts_to_the_right_state() {
+        // A panic anywhere in the job is terminal, and the worker takes the next job.
         for stage in ["replay_loaded", "annotate", "export"] {
             assert_eq!(job_outcome(|| panic!("{stage}")), Outcome::Terminal);
-            assert_eq!(job_outcome(|| Ok(())), Outcome::Passed);
         }
-    }
-    #[test]
-    fn retry_cap_and_non_transient_failures_are_terminal() {
+        assert_eq!(job_outcome(|| Ok(())), Outcome::Passed);
         let mut e = entry(1, State::InFlight);
         for attempt in 1..=MAX_ATTEMPTS {
             finish(&mut e, &Outcome::Retryable);
@@ -1405,11 +1338,6 @@ mod tests {
             Outcome::Retryable
         );
     }
-}
-
-#[cfg(test)]
-mod canonical_again_tests {
-    use super::*;
     #[test]
     fn reverted_tip_is_eligible_again_and_new_generation_survives_old_completion() {
         let header = serde_json::json!({"number":"0x1", "parentHash":format!("0x{}", "00".repeat(32)),

@@ -115,7 +115,7 @@ cargo +1.93.0 test --workspace --locked -- --ignored
 
 The saved blocks in `fixtures/replay/` are chain data, so an upgrade does not change them.
 If an offline test fails with a missing proof node, the new code reads state the fixture did not save.
-Re-record that fixture with its command in `fixtures/replay/README.md`; the `call-people-*` fixtures are regenerated offline with the `record_calls` example.
+Re-record that fixture with its command in `fixtures/replay/README.md`; the `call-people-nonce` fixture is regenerated offline with the `record_calls` example.
 `fixtures/wasm/missing-host-function.wasm` is built from hand-written WAT and does not depend on the SDK.
 
 Then update every place that names the release or the crate versions:

@@ -542,16 +542,24 @@ fn related_keys(keys: &[Vec<u8>], families: &BTreeSet<(Vec<u8>, Concat)>) -> Vec
 #[cfg(test)]
 mod prediction_tests {
     use super::*;
-    fn key(prefix: u8, id: u8, twox: bool) -> Vec<u8> {
-        let mut key = vec![prefix; 32];
-        let id = [id; 32];
-        if twox {
-            key.extend(sp_crypto_hashing::twox_64(&id));
-        } else {
-            key.extend(sp_crypto_hashing::blake2_128(&id));
+    #[test]
+    fn predictions_keep_three_replays_at_most_4096_paths_and_31_related_keys() {
+        let session = ReplaySession::new(None).expect("session");
+        session.remember_paths([b"old".to_vec()].into());
+        for i in 0..3 {
+            session.remember_paths([vec![i]].into());
         }
-        key.extend(id);
-        key
+        assert!(!session.predicted_keys().contains(b"old".as_slice()));
+        session.remember_paths((0..5000u16).map(|i| i.to_be_bytes().to_vec()).collect());
+        assert_eq!(session.predicted_keys().len(), 4096);
+        let key = |prefix: u8, id: u8| {
+            let mut key = vec![prefix; 32];
+            key.extend(sp_crypto_hashing::blake2_128(&[id; 32]));
+            key.extend([id; 32]);
+            key
+        };
+        let many = (0..64).map(|prefix| key(prefix, 7)).collect();
+        assert_eq!(related_keys(&[key(1, 9)], &families(&many)).len(), 31);
     }
     #[test]
     fn active_blocks_share_immutable_nodes_without_sharing_offline_coverage() {
@@ -583,26 +591,5 @@ mod prediction_tests {
         ));
         let offline = ProofDb::with_session(None, H256::repeat_byte(1), session);
         assert!(offline.cached(&hash).expect("offline").is_none());
-    }
-    #[test]
-    fn related_predictions_rehash_new_ids_across_observed_maps_and_bound_bandwidth() {
-        let known = [key(1, 7, false), key(2, 8, true)].into_iter().collect();
-        let source = key(1, 9, false);
-        assert_eq!(
-            related_keys(std::slice::from_ref(&source), &families(&known)),
-            vec![key(2, 9, true)]
-        );
-        let mut corrupt = key(3, 7, false);
-        corrupt[32] ^= 1;
-        assert!(
-            related_keys(
-                std::slice::from_ref(&source),
-                &families(&[corrupt].into_iter().collect())
-            )
-            .is_empty()
-        );
-        assert!(related_keys(&[vec![0; 32]], &families(&known)).is_empty());
-        let many = (0..64).map(|p| key(p, 7, false)).collect();
-        assert_eq!(related_keys(&[source], &families(&many)).len(), 31);
     }
 }

@@ -133,30 +133,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_envelope_response_and_bare_trace() {
+    fn parses_envelope_response_and_bare_trace_and_surfaces_errors() {
         let bare = r#"{"blockHash":"0x01","parentHash":"0x00","tracingTargets":"state",
             "storageKeys":"","methods":"","spans":[],
             "events":[{"target":"state","data":{"stringValues":{"method":"Get"}},"parentId":null}]}"#;
         let wrapped = format!(r#"{{"blockTrace":{bare}}}"#);
         let envelope = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{wrapped}}}"#);
+        // Some clients write `"error": null` next to a successful result.
+        let null_error = format!(r#"{{"jsonrpc":"2.0","id":1,"error":null,"result":{wrapped}}}"#);
 
-        for input in [bare.to_string(), wrapped, envelope] {
+        for input in [bare.to_string(), wrapped, envelope, null_error] {
             let trace = parse_trace_block(&input).unwrap();
             assert_eq!(trace.block_hash, "0x01");
             assert_eq!(trace.events[0].field("method"), Some("Get"));
         }
-    }
 
-    #[test]
-    fn surfaces_trace_and_rpc_errors() {
         let trace_err = r#"{"result":{"traceError":{"error":"boom"}}}"#;
         assert!(matches!(parse_trace_block(trace_err), Err(Error::Trace(e)) if e == "boom"));
-
         let rpc_err = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unsafe"}}"#;
         assert!(matches!(parse_trace_block(rpc_err), Err(Error::Rpc(_))));
-
-        // Some clients write `"error": null` next to a successful result.
-        let ok = r#"{"jsonrpc":"2.0","id":1,"error":null,"result":{"blockTrace":{"blockHash":"0x01","parentHash":"0x00"}}}"#;
-        assert_eq!(parse_trace_block(ok).unwrap().block_hash, "0x01");
     }
 }

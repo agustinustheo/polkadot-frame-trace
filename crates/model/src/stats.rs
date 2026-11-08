@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn child_trie_reads_are_keyed_by_trie_and_key() {
+    fn reads_are_keyed_by_child_trie_and_key_and_truncated_keys_never_match() {
         let mut ops = ops(&[
             &[
                 ("method", "ChildGet"),
@@ -130,27 +130,15 @@ mod tests {
                 ("value", "Some(0102)"),
             ],
             &[("method", "ChildKill"), ("child_info", "03")],
-        ]);
-        mark_duplicate_reads(&mut ops);
-        let dups: Vec<bool> = ops.iter().map(|op| op.duplicate_read).collect();
-        assert_eq!(dups, [false, false, false, true, false, false]);
-        assert_eq!(ops[5].kind, OpKind::KillChild);
-
-        let stats = Stats::of(&ops);
-        // (01,aa) (02,aa) (main,aa) (02,bb) (03,"")
-        assert_eq!((stats.reads, stats.writes, stats.distinct_keys), (4, 2, 5));
-        assert_eq!(
-            (stats.bytes_read, stats.bytes_written, stats.duplicate_reads),
-            (3, 2, 1)
-        );
-    }
-
-    #[test]
-    fn truncated_keys_are_not_duplicates_or_distinct_keys() {
-        let mut ops = ops(&[
             &[("method", "Get"), ("key", "aa...bb"), ("result", "None")],
             &[("method", "Get"), ("key", "aa...bb"), ("result", "None")],
             &[("method", "Get"), ("key", "aa...cc"), ("result", "None")],
+            &[
+                ("method", "ChildGet"),
+                ("child_info", "0a...0b"),
+                ("key", "aabb...ccdd"),
+                ("result", "None"),
+            ],
             &[
                 ("method", "ChildGet"),
                 ("child_info", "01...02"),
@@ -158,22 +146,53 @@ mod tests {
                 ("result", "None"),
             ],
             &[("method", "Get"), ("key", "aa"), ("result", "None")],
-            &[("method", "Get"), ("key", "aa"), ("result", "None")],
+            &[
+                ("method", "Append"),
+                ("key", "aa"),
+                ("value", "0102...0304"),
+            ],
         ]);
-        assert_eq!(ops[0].key.tail, Some(vec![0xbb]));
-        assert_eq!(ops[4].key, PrintedBytes::full([0xaa]));
+        assert_eq!(ops[5].kind, OpKind::KillChild);
+        assert_eq!(ops[6].key.tail, Some(vec![0xbb]));
+        assert_eq!(ops[11].key, PrintedBytes::full([0xaa]));
+        let truncated = &ops[9];
+        assert_eq!(truncated.key.head, [0xaa, 0xbb]);
+        assert_eq!(truncated.key.tail.as_deref(), Some(&[0xcc, 0xdd][..]));
+        assert_eq!(truncated.key.to_hex(), "0xaabb...ccdd");
+        assert!(
+            truncated
+                .child_trie
+                .as_ref()
+                .is_some_and(PrintedBytes::is_truncated)
+        );
+        assert_eq!(truncated.key_id(), None);
+        assert!(ops[12].value_truncated);
+        assert_eq!(ops[12].value_len, None);
+
         mark_duplicate_reads(&mut ops);
-        let dups: Vec<bool> = ops.iter().map(|op| op.duplicate_read).collect();
-        assert_eq!(dups, [false, false, false, false, false, true]);
+        let dups: Vec<usize> = ops
+            .iter()
+            .filter(|op| op.duplicate_read)
+            .map(|op| op.seq)
+            .collect();
+        // The same child key again, and the main-trie key again. Truncated keys and keys of a
+        // truncated child trie never match.
+        assert_eq!(dups, [3, 11]);
 
         let stats = Stats::of(&ops);
+        // (01,aa) (02,aa) (main,aa) (02,bb) (03,""), and five truncated keys.
         assert_eq!(
             (
+                stats.reads,
+                stats.writes,
                 stats.distinct_keys,
-                stats.truncated_keys,
-                stats.duplicate_reads
+                stats.truncated_keys
             ),
-            (1, 4, 1)
+            (10, 3, 5, 5)
+        );
+        assert_eq!(
+            (stats.bytes_read, stats.bytes_written, stats.duplicate_reads),
+            (3, 2, 2)
         );
     }
 }

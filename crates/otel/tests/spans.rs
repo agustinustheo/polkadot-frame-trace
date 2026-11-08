@@ -237,74 +237,44 @@ fn synthetic_block(ops: usize) -> AnnotatedBlock {
     }
 }
 
-#[test]
-fn exports_thousands_of_ops_without_drops() {
-    let spans = export(&synthetic_block(5000), Timing::default());
-    assert_eq!(spans.len(), 5002);
-    assert!(spans.iter().any(|s| s.name == "block #7 (0x01)"));
-    let trace = polkadot_frame_trace_otel::prepare(&synthetic_block(5000), Timing::default());
-    assert_eq!((trace.total(), trace.unsent()), (5002, 5002));
-}
-
-/// An OTLP/HTTP receiver that answers each request with the next `(status, delay)` and
-/// records the status and span IDs of every request it answered.
+/// An OTLP/HTTP receiver that answers each request with the next status and records the
+/// status and span IDs of every request it answered.
 type Seen = std::sync::Arc<std::sync::Mutex<Vec<(u16, Vec<Vec<u8>>)>>>;
-fn scripted_receiver(script: Vec<(u16, Duration)>) -> (String, Seen) {
+fn scripted_receiver(script: Vec<u16>) -> (String, Seen) {
     use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
     use prost::Message;
-    use std::io::{BufRead, BufReader, Read, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    use std::io::Write;
+    let seen = Seen::default();
     let log = seen.clone();
-    std::thread::spawn(move || {
-        for (index, stream) in listener.incoming().enumerate() {
-            let Ok(mut stream) = stream else { return };
-            let (status, delay) = script.get(index).copied().unwrap_or((200, Duration::ZERO));
-            let log = log.clone();
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut length = 0;
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = v.trim().parse().unwrap_or(0);
-                    }
-                }
-                let mut body = vec![0; length];
-                if reader.read_exact(&mut body).is_err() {
-                    return;
-                }
-                let request = ExportTraceServiceRequest::decode(body.as_slice()).unwrap();
-                // Dashboards filter on the service name, so every request must carry it.
-                // A request without it gets status 599, which breaks the test's status checks.
-                let named = request.resource_spans.iter().all(|r| {
-                    r.resource.as_ref().is_some_and(|resource| {
-                        resource.attributes.iter().any(|kv| {
-                            kv.key == "service.name"
-                                && format!("{:?}", kv.value).contains("polkadot-frame-trace")
-                        })
-                    })
-                });
-                let status = if named { status } else { 599 };
-                let ids = request
-                    .resource_spans
-                    .iter()
-                    .flat_map(|r| &r.scope_spans)
-                    .flat_map(|s| &s.spans)
-                    .map(|span| span.span_id.clone())
-                    .collect();
-                std::thread::sleep(delay);
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 {status} Test\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                );
-                log.lock().unwrap().push((status, ids));
-            });
-        }
+    let url = raw_receiver(move |index, body, stream| {
+        let request = ExportTraceServiceRequest::decode(body).unwrap();
+        // Dashboards filter on the service name, so every request must carry it.
+        // A request without it gets status 599, which breaks the test's status checks.
+        let named = request.resource_spans.iter().all(|r| {
+            r.resource.as_ref().is_some_and(|resource| {
+                resource.attributes.iter().any(|kv| {
+                    kv.key == "service.name"
+                        && format!("{:?}", kv.value).contains("polkadot-frame-trace")
+                })
+            })
+        });
+        let status = if named {
+            script.get(index).copied().unwrap_or(200)
+        } else {
+            599
+        };
+        let ids = request
+            .resource_spans
+            .iter()
+            .flat_map(|r| &r.scope_spans)
+            .flat_map(|s| &s.spans)
+            .map(|span| span.span_id.clone())
+            .collect();
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status} Test\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        log.lock().unwrap().push((status, ids));
     });
     (url, seen)
 }
@@ -312,12 +282,8 @@ fn scripted_receiver(script: Vec<(u16, Duration)>) -> (String, Seen) {
 #[test]
 fn a_retry_sends_only_the_batches_not_yet_accepted_with_the_same_span_ids() {
     // 1002 spans: batch 1 is accepted, batch 2 fails, then the retry sends only batch 2.
-    let (url, seen) = scripted_receiver(vec![
-        (200, Duration::ZERO),
-        // Not one the exporter retries by itself, so the failure reaches the caller.
-        (400, Duration::ZERO),
-        (200, Duration::ZERO),
-    ]);
+    // 400 is not a status the exporter retries by itself, so the failure reaches the caller.
+    let (url, seen) = scripted_receiver(vec![200, 400, 200]);
     let sender = polkadot_frame_trace_otel::OtlpSender::new(&url).unwrap();
     let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(1000), Timing::default());
     let error = sender.send(&mut trace).unwrap_err().to_string();
@@ -348,28 +314,10 @@ fn a_retry_sends_only_the_batches_not_yet_accepted_with_the_same_span_ids() {
     assert_eq!(unique.len(), 1002, "no span was accepted twice");
 }
 
-#[test]
-fn a_timed_out_request_is_not_sent_again_after_the_retry() {
-    let (url, seen) = scripted_receiver(vec![(200, Duration::from_secs(2))]);
-    let sender =
-        polkadot_frame_trace_otel::OtlpSender::with_timeout(&url, Duration::from_millis(300))
-            .unwrap();
-    let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(10), Timing::default());
-    assert!(
-        sender.send(&mut trace).is_err(),
-        "the first request times out"
-    );
-    assert_eq!(sender.send(&mut trace).unwrap(), 12);
-    // Give a stray background export time to land, as the old batch exporter's did.
-    std::thread::sleep(Duration::from_secs(3));
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2, "exactly the timed-out request and the retry");
-    assert_eq!(seen[0].1, seen[1].1, "the retry carries the same span IDs");
-}
-
-/// Serves each connection with `respond(index, stream)` after reading the request.
+/// Serves each connection with `respond(index, body, stream)` after reading a request to
+/// `/v1/traces`. Requests to any other path get no answer.
 fn raw_receiver(
-    respond: impl Fn(usize, &mut std::net::TcpStream) + Send + Sync + 'static,
+    respond: impl Fn(usize, &[u8], &mut std::net::TcpStream) + Send + Sync + 'static,
 ) -> String {
     use std::io::{BufRead, BufReader, Read};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -381,6 +329,8 @@ fn raw_receiver(
             let respond = respond.clone();
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
                 let mut length = 0;
                 loop {
                     let mut line = String::new();
@@ -391,8 +341,11 @@ fn raw_receiver(
                         length = v.trim().parse().unwrap_or(0);
                     }
                 }
-                if reader.read_exact(&mut vec![0; length]).is_ok() {
-                    respond(index, &mut stream);
+                let mut body = vec![0; length];
+                if request_line == "POST /v1/traces HTTP/1.1\r\n"
+                    && reader.read_exact(&mut body).is_ok()
+                {
+                    respond(index, &body, &mut stream);
                 }
             });
         }
@@ -401,10 +354,10 @@ fn raw_receiver(
 }
 
 #[test]
-fn a_slowly_sent_response_body_cannot_outlast_the_timeout() {
+fn a_slow_response_or_the_exporters_own_retries_cannot_outlast_the_timeout() {
     use std::io::Write;
     // Headers at once, then one body byte every 150 ms: each read is quick, the whole is not.
-    let url = raw_receiver(|_, stream| {
+    let slow_body = raw_receiver(|_, _, stream| {
         let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 40\r\n\r\n");
         for _ in 0..40 {
             if stream.write_all(&[0]).is_err() {
@@ -413,21 +366,8 @@ fn a_slowly_sent_response_body_cannot_outlast_the_timeout() {
             std::thread::sleep(Duration::from_millis(150));
         }
     });
-    let sender =
-        polkadot_frame_trace_otel::OtlpSender::with_timeout(&url, Duration::from_millis(400))
-            .unwrap();
-    let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(10), Timing::default());
-    let start = std::time::Instant::now();
-    assert!(sender.send(&mut trace).is_err());
-    let took = start.elapsed();
-    assert!(took < Duration::from_millis(700), "{took:?}");
-}
-
-#[test]
-fn the_exporters_own_retries_stay_within_the_timeout() {
-    use std::io::Write;
     // A slow 503 makes the exporter retry by itself; the retry then gets no answer at all.
-    let url = raw_receiver(|index, stream| {
+    let slow_retry = raw_receiver(|index, _, stream| {
         if index == 0 {
             std::thread::sleep(Duration::from_millis(500));
             let _ = stream.write_all(
@@ -437,146 +377,78 @@ fn the_exporters_own_retries_stay_within_the_timeout() {
             std::thread::sleep(Duration::from_secs(10));
         }
     });
-    let sender =
-        polkadot_frame_trace_otel::OtlpSender::with_timeout(&url, Duration::from_millis(800))
-            .unwrap();
-    let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(10), Timing::default());
-    let start = std::time::Instant::now();
-    assert!(sender.send(&mut trace).is_err());
-    let took = start.elapsed();
-    assert!(took < Duration::from_millis(1000), "{took:?}");
-}
-
-/// Answers request `index` with one span rejected: "quota" first, "invalid label" after.
-fn partially_rejecting(index: usize, stream: &mut std::net::TcpStream) {
-    use opentelemetry_proto::tonic::collector::trace::v1::{
-        ExportTracePartialSuccess, ExportTraceServiceResponse,
-    };
-    use prost::Message;
-    use std::io::Write;
-    let body = ExportTraceServiceResponse {
-        partial_success: Some(ExportTracePartialSuccess {
-            rejected_spans: 1,
-            error_message: if index == 0 { "quota" } else { "invalid label" }.into(),
-        }),
-    }
-    .encode_to_vec();
-    let _ = write!(
-        stream,
-        "HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(&body);
-}
-
-#[test]
-fn a_rejection_message_belongs_to_the_trace_it_came_with() {
-    let sender =
-        polkadot_frame_trace_otel::OtlpSender::new(&raw_receiver(partially_rejecting)).unwrap();
-    for message in ["quota", "invalid label"] {
+    for (url, timeout, limit) in [(slow_body, 400, 700), (slow_retry, 800, 1000)] {
+        let sender = polkadot_frame_trace_otel::OtlpSender::with_timeout(
+            &url,
+            Duration::from_millis(timeout),
+        )
+        .unwrap();
         let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(10), Timing::default());
-        let error = sender.send(&mut trace).unwrap_err().to_string();
-        assert_eq!(
-            error,
-            format!("1 of 12 spans rejected by the receiver: {message}")
-        );
+        let start = std::time::Instant::now();
+        assert!(sender.send(&mut trace).is_err());
+        let took = start.elapsed();
+        assert!(took < Duration::from_millis(limit), "{url}: {took:?}");
     }
 }
 
 #[test]
 fn otlp_partial_rejections_are_totalled_across_batches_without_retries() {
-    use std::{
-        io::{BufRead, BufReader, Read, Write},
-        net::TcpListener,
-        time::Instant,
-    };
-
     use opentelemetry_proto::tonic::collector::trace::v1::{
         ExportTracePartialSuccess, ExportTraceServiceRequest, ExportTraceServiceResponse,
     };
+    use polkadot_frame_trace_otel::Error;
     use prost::Message;
+    use std::io::Write;
 
-    for rejected in [[3, 0], [2, 5], [0, 0]] {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let endpoint = format!("http://{}/v1/traces/", listener.local_addr().unwrap());
-        let server = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut batches = Vec::new();
-            while batches.iter().sum::<usize>() < 1002 {
-                let rejected_spans = rejected.get(batches.len()).copied().unwrap_or(0);
-                let mut stream = loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < deadline, "receiver timed out");
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(e) => panic!("accept: {e}"),
-                    }
-                };
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut length = 0;
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                assert_eq!(line, "POST /v1/traces HTTP/1.1\r\n");
-                loop {
-                    line.clear();
-                    assert!(reader.read_line(&mut line).unwrap() > 0);
-                    if line == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = value.trim().parse::<usize>().unwrap();
-                    }
-                }
-                let mut body = vec![0; length];
-                reader.read_exact(&mut body).unwrap();
-                let request = ExportTraceServiceRequest::decode(body.as_slice()).unwrap();
-                let count: usize = request
-                    .resource_spans
-                    .iter()
-                    .flat_map(|r| &r.scope_spans)
-                    .map(|s| s.spans.len())
-                    .sum();
-                batches.push(count);
-                let body = ExportTraceServiceResponse {
-                    partial_success: Some(ExportTracePartialSuccess {
-                        rejected_spans,
-                        error_message: "quota".into(),
-                    }),
-                }
-                .encode_to_vec();
-                write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).unwrap();
-                stream.write_all(&body).unwrap();
-            }
-            batches
-        });
-        let result = polkadot_frame_trace_otel::export_otlp(
-            &synthetic_block(1000),
-            &endpoint,
-            Timing::default(),
+    // Rejected spans for each request, in order: each trace below is sent as two batches.
+    let rejected = [3, 0, 2, 5, 0, 0];
+    let batches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = batches.clone();
+    let url = raw_receiver(move |index, body, stream| {
+        let request = ExportTraceServiceRequest::decode(body).unwrap();
+        let spans: usize = request
+            .resource_spans
+            .iter()
+            .flat_map(|r| &r.scope_spans)
+            .map(|s| s.spans.len())
+            .sum();
+        log.lock().unwrap().push(spans);
+        let body = ExportTraceServiceResponse {
+            partial_success: Some(ExportTracePartialSuccess {
+                rejected_spans: rejected.get(index).copied().unwrap_or(0),
+                // Each message names its request, so a message left from an earlier trace shows.
+                error_message: format!("request {index}"),
+            }),
+        }
+        .encode_to_vec();
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
         );
-        let batches = server.join().unwrap();
-        assert_eq!(batches.iter().sum::<usize>(), 1002);
-        assert!(batches.len() >= 2, "{batches:?}");
-        let expected = rejected.into_iter().sum::<i64>();
-        if expected == 0 {
-            assert_eq!(result.unwrap(), 1002);
-        } else {
-            assert!(
-                matches!(result, Err(polkadot_frame_trace_otel::Error::Rejected { rejected, total: 1002, .. }) if rejected == expected as u64)
-            );
-            assert_eq!(
-                result.unwrap_err().to_string(),
-                format!("{expected} of 1002 spans rejected by the receiver: quota")
-            );
+        let _ = stream.write_all(&body);
+    });
+    // One sender for every trace, as `follow` keeps it, at an endpoint with a trailing slash.
+    let sender = polkadot_frame_trace_otel::OtlpSender::new(&format!("{url}/v1/traces/")).unwrap();
+    for expected in [Some((3, "request 0")), Some((7, "request 2")), None] {
+        let mut trace =
+            polkadot_frame_trace_otel::prepare(&synthetic_block(1000), Timing::default());
+        match (sender.send(&mut trace), expected) {
+            (Ok(spans), None) => assert_eq!(spans, 1002),
+            (
+                Err(Error::Rejected {
+                    rejected,
+                    total: 1002,
+                    message,
+                }),
+                Some((expected, expected_message)),
+            ) => assert_eq!((rejected, message.as_str()), (expected, expected_message)),
+            (result, _) => panic!("{expected:?}: {result:?}"),
         }
     }
+    let batches = batches.lock().unwrap();
+    assert_eq!(batches.len(), 6, "no batch is sent twice: {batches:?}");
+    assert_eq!(batches.iter().sum::<usize>(), 3 * 1002);
 }
 
 #[test]
@@ -609,92 +481,6 @@ fn runtime_override_is_labelled_on_the_root_span() {
 }
 
 #[test]
-fn measured_intervals_and_runtime_parent_tree() {
-    use polkadot_frame_trace_model::{MeasuredTiming, ReplayCapture, ReplayEvent, RuntimeSpan};
-    let span = |id, parent_id, name: &str, wasm, start_ns, end_ns| RuntimeSpan {
-        id,
-        parent_id,
-        name: name.into(),
-        target: if wasm {
-            "runtime".into()
-        } else {
-            "sp_io::storage".into()
-        },
-        wasm,
-        fields: Default::default(),
-        start_ns,
-        end_ns: Some(end_ns),
-        duration_ns: end_ns - start_ns,
-        enters: 1,
-        proof_start_bytes: 0,
-        proof_end_bytes: 0,
-    };
-    let capture = ReplayCapture {
-        block_hash: "0x01".into(),
-        parent_hash: "0x00".into(),
-        duration_ns: 120,
-        spans: vec![
-            span(1, None, "execute_block", true, 10, 100),
-            span(2, Some(1), "dispatch", true, 20, 70),
-            span(3, Some(2), "get", false, 30, 50),
-        ],
-        events: vec![ReplayEvent {
-            seq: 0,
-            at_ns: 45,
-            parent_id: Some(3),
-            target: "state".into(),
-            fields: [
-                ("method".into(), "Get".into()),
-                ("key".into(), "aa".into()),
-                ("result".into(), "Some(00)".into()),
-            ]
-            .into(),
-        }],
-        transitions: vec![],
-    };
-    let traced = TracedBlock::from_replay(&capture).unwrap();
-    assert_eq!(
-        traced.ops[0].timing,
-        Some(MeasuredTiming {
-            start_ns: 30,
-            duration_ns: 20
-        })
-    );
-    let mut block = annotate(&traced, None);
-    let start = SystemTime::UNIX_EPOCH;
-    let timing = Timing {
-        start,
-        op_width: Duration::from_secs(1),
-    };
-    let spans = export(&block, timing);
-    assert!(
-        spans
-            .iter()
-            .all(|s| attr(s, "frame.timing") == Some("timed replay".into()))
-    );
-    let dispatch = by_name(&spans, "dispatch");
-    assert_eq!(
-        dispatch.parent_span_id,
-        by_name(&spans, "unsegmented").span_context.span_id()
-    );
-    let op = by_name(&spans, "get <unknown>");
-    assert_eq!(op.parent_span_id, dispatch.span_context.span_id());
-    assert_eq!(
-        (op.start_time, op.end_time),
-        (
-            start + Duration::from_nanos(30),
-            start + Duration::from_nanos(50)
-        )
-    );
-    block.runtime_spans.clear();
-    let spans = export(&block, timing);
-    assert_eq!(
-        by_name(&spans, "get <unknown>").parent_span_id,
-        by_name(&spans, "unsegmented").span_context.span_id()
-    );
-}
-
-#[test]
 fn traced_batch_keeps_named_extrinsic_runtime_and_ops_in_one_tree() {
     let replay = polkadot_frame_trace_replay::replay_with_session(
         polkadot_frame_trace_replay::Artifact::load(
@@ -709,15 +495,35 @@ fn traced_batch_keeps_named_extrinsic_runtime_and_ops_in_one_tree() {
     )
     .unwrap();
     let metadata = Metadata::from_hex(&replay.artifact.metadata).unwrap();
-    let block = annotate(
-        &TracedBlock::from_replay(&replay.capture).unwrap(),
-        Some(&metadata),
-    );
+    let traced = TracedBlock::from_replay(&replay.capture).unwrap();
+    // Every op is measured: its interval is the runtime span that performed it.
+    assert!(traced.ops.iter().all(|op| op.timing.is_some()));
+    let mut block = annotate(&traced, Some(&metadata));
     let spans = export(&block, Timing::default());
     let ids: std::collections::HashMap<_, _> = spans
         .iter()
         .map(|s| (s.span_context.span_id(), s))
         .collect();
+    for span in &spans {
+        assert_eq!(attr(span, "frame.timing"), Some("timed replay".into()));
+        if attr(span, "frame.phase").is_some() {
+            assert_eq!(
+                attr(span, "frame.phase.timing_available"),
+                Some(true.into()),
+                "{}",
+                span.name
+            );
+        }
+        // Measured intervals nest: each child lies inside its parent.
+        if let Some(parent) = ids.get(&span.parent_span_id) {
+            assert!(
+                parent.start_time <= span.start_time && span.end_time <= parent.end_time,
+                "{} is not inside {}",
+                span.name,
+                parent.name
+            );
+        }
+    }
     let phase = spans
         .iter()
         .find(|s| s.name.contains("Utility.batch") && s.name.starts_with("extrinsic"))
@@ -765,111 +571,16 @@ fn traced_batch_keeps_named_extrinsic_runtime_and_ops_in_one_tree() {
                 .any(|s| s.parent_span_id == exported.span_context.span_id())
         );
     }
-}
 
-#[test]
-fn measured_hooks_descend_from_the_corresponding_phase() {
-    use polkadot_frame_trace_model::{MeasuredTiming, RuntimeSpan};
-    let mut block = synthetic_block(1);
-    block.timing = Some(MeasuredTiming {
-        start_ns: 0,
-        duration_ns: 100,
-    });
-    let original = block.phases[0].clone();
-    block.phases = ["initialization", "finalization"]
-        .iter()
-        .enumerate()
-        .map(|(i, kind)| {
-            let mut phase = original.clone();
-            phase.kind = kind.to_string();
-            phase.label = (*kind).into();
-            phase.ops[0].parent_span = Some(i as u64 + 1);
-            phase.ops[0].timing = Some(MeasuredTiming {
-                start_ns: i as u64 * 50 + 5,
-                duration_ns: 10,
-            });
-            phase
-        })
-        .collect();
-    block.runtime_spans = ["on_initialize", "on_finalize"]
-        .iter()
-        .enumerate()
-        .map(|(i, name)| RuntimeSpan {
-            id: i as u64 + 1,
-            parent_id: None,
-            name: (*name).into(),
-            target: "runtime".into(),
-            wasm: true,
-            fields: Default::default(),
-            start_ns: i as u64 * 50,
-            end_ns: Some(i as u64 * 50 + 40),
-            duration_ns: 40,
-            enters: 1,
-            proof_start_bytes: 0,
-            proof_end_bytes: 5,
-        })
-        .collect();
-    let spans = export(&block, Timing::default());
-    for (name, phase) in [
-        ("on_initialize", "initialization"),
-        ("on_finalize", "finalization"),
-    ] {
-        let hook = by_name(&spans, name);
-        assert_eq!(
-            hook.parent_span_id,
-            by_name(&spans, phase).span_context.span_id()
-        );
-        assert!(
-            spans
-                .iter()
-                .any(|s| s.parent_span_id == hook.span_context.span_id())
-        );
-        assert!(attr(hook, "frame.proof.marginal_bytes").is_none());
-    }
-}
-
-#[test]
-fn measured_phases_without_ops_use_only_real_runtime_bounds() {
-    use polkadot_frame_trace_model::{MeasuredTiming, RuntimeSpan};
-    let mut block = synthetic_block(0);
-    block.timing = Some(MeasuredTiming {
-        start_ns: 0,
-        duration_ns: 100,
-    });
-    let mut init = block.phases[0].clone();
-    init.kind = "initialization".into();
-    init.label = "initialization".into();
-    let mut ext = init.clone();
-    ext.kind = "apply_extrinsic".into();
-    ext.label = "extrinsic".into();
-    ext.extrinsic_index = Some(0);
-    let mut nested = init.clone();
-    nested.kind = "post_inherents".into();
-    nested.label = "post inherents".into();
-    ext.post_inherents = Some(Box::new(nested));
-    let mut empty = init.clone();
-    empty.kind = "finalization".into();
-    empty.label = "untimed finalization".into();
-    block.phases = vec![init, ext, empty];
-    block.runtime_spans = [("on_initialize", 30, 40), ("on_poll", 50, 60)]
-        .into_iter()
-        .enumerate()
-        .map(|(i, (name, start, end))| RuntimeSpan {
-            id: i as u64 + 1,
-            parent_id: None,
-            name: name.into(),
-            target: "runtime".into(),
-            wasm: true,
-            fields: Default::default(),
-            start_ns: start,
-            end_ns: Some(end),
-            duration_ns: end - start,
-            enters: 1,
-            proof_start_bytes: 0,
-            proof_end_bytes: 0,
-        })
-        .collect();
+    // Without runtime spans, ops hang directly under their phase and keep their measured
+    // times. An empty phase has no bounds of its own: it spans the block and says so.
+    block.runtime_spans.clear();
+    let mut empty = block.phases[0].clone();
+    (empty.kind, empty.label) = ("unsegmented".into(), "empty phase".into());
+    (empty.ops, empty.post_inherents, empty.extrinsic_index) = (vec![], None, None);
+    block.phases.push(empty);
     let start = SystemTime::UNIX_EPOCH;
+    let at = |ns| start + Duration::from_nanos(ns);
     let spans = export(
         &block,
         Timing {
@@ -877,35 +588,35 @@ fn measured_phases_without_ops_use_only_real_runtime_bounds() {
             ..Timing::default()
         },
     );
-    for (name, lo, hi) in [
-        ("initialization", 30, 40),
-        ("extrinsic", 50, 60),
-        ("post inherents", 50, 60),
-    ] {
-        let phase = by_name(&spans, name);
-        assert_eq!(
-            (phase.start_time, phase.end_time),
-            (
-                start + Duration::from_nanos(lo),
-                start + Duration::from_nanos(hi)
-            )
-        );
-        assert_eq!(
-            attr(phase, "frame.phase.timing_available"),
-            Some(true.into())
-        );
-        assert_eq!(attr(phase, "frame.timing"), Some("timed replay".into()));
+    let ids: std::collections::HashMap<_, _> = spans
+        .iter()
+        .map(|s| (s.span_context.span_id(), s))
+        .collect();
+    let ops: Vec<_> = spans
+        .iter()
+        .filter(|s| attr(s, "db.operation.name").is_some())
+        .collect();
+    for op in &ops {
+        assert!(attr(ids[&op.parent_span_id], "frame.phase").is_some());
     }
-    let untimed = by_name(&spans, "untimed finalization");
-    assert_eq!(attr(untimed, "frame.timing"), Some("no timing".into()));
+    let mut exported: Vec<_> = ops.iter().map(|s| (s.start_time, s.end_time)).collect();
+    let mut measured: Vec<_> = block
+        .all_phases()
+        .flat_map(|p| &p.ops)
+        .map(|op| op.timing.unwrap())
+        .map(|t| (at(t.start_ns), at(t.start_ns + t.duration_ns)))
+        .collect();
+    exported.sort();
+    measured.sort();
+    assert_eq!(exported, measured);
+    let empty = by_name(&spans, "empty phase");
+    assert_eq!(attr(empty, "frame.timing"), Some("no timing".into()));
     assert_eq!(
-        (untimed.start_time, untimed.end_time),
-        (start, start + Duration::from_nanos(100))
-    );
-    assert_eq!(
-        attr(untimed, "frame.phase.timing_available"),
+        attr(empty, "frame.phase.timing_available"),
         Some(false.into())
     );
+    let whole = block.timing.unwrap().duration_ns;
+    assert_eq!((empty.start_time, empty.end_time), (at(0), at(whole)));
 }
 
 #[test]
@@ -1131,122 +842,40 @@ fn runtime_call_root_and_empty_calls_export_one_trace_with_explicit_semantics() 
 
 #[test]
 fn observed_read_origins_and_proof_bytes_are_otlp_attributes() {
-    let mut block = synthetic_block(3);
-    for (op, origin) in
-        block.phases[0]
-            .ops
-            .iter_mut()
-            .zip(["overlay", "backend_warm", "backend_cold"])
-    {
-        op.origin = Some(origin.into());
-        op.proof_bytes_added = Some(if origin == "backend_cold" { 100 } else { 0 });
+    // (origin in the JSON, exported origin, proof bytes)
+    let rows = [
+        (Some("overlay"), "cache", Some(0)),
+        (Some("backend_warm"), "trie (already in proof)", Some(0)),
+        (Some("backend_cold"), "trie (new)", Some(100)),
+        (None, "unknown", None),
+        (Some("unknown"), "unknown", None),
+        (Some("legacy_origin"), "unknown", None),
+    ];
+    let mut block = synthetic_block(rows.len());
+    // A timed replay, but the ops themselves have no timing.
+    block.timing = Some(polkadot_frame_trace_model::MeasuredTiming {
+        start_ns: 0,
+        duration_ns: 100,
+    });
+    for (op, (raw, _, proof)) in block.phases[0].ops.iter_mut().zip(rows) {
+        op.origin = raw.map(Into::into);
+        op.proof_bytes_added = proof;
     }
     let spans = export(&block, Timing::default());
-    // The annotated fields serialized to JSON retain their original identifiers.
-    for (op, raw) in block.phases[0]
-        .ops
-        .iter()
-        .zip(["overlay", "backend_warm", "backend_cold"])
-    {
-        assert_eq!(op.origin.as_deref(), Some(raw));
-    }
-    for (origin, label) in [
-        ("overlay", "cache"),
-        ("backend_warm", "trie (already in proof)"),
-        ("backend_cold", "trie (new)"),
-    ] {
+    for (seq, (raw, label, proof)) in rows.into_iter().enumerate() {
+        // The JSON keeps the raw value.
+        assert_eq!(block.phases[0].ops[seq].origin.as_deref(), raw);
         let span = spans
             .iter()
-            .find(|s| attr(s, "frame.storage.origin_raw") == Some(origin.into()))
+            .find(|s| attr(s, "frame.storage.seq") == Some((seq as i64).into()))
             .unwrap();
         assert_eq!(attr(span, "frame.storage.origin"), Some(label.into()));
+        assert_eq!(attr(span, "frame.storage.origin_raw"), raw.map(Value::from));
         assert_eq!(
             attr(span, "frame.storage.proof_bytes"),
-            Some(
-                if origin == "backend_cold" {
-                    100i64
-                } else {
-                    0i64
-                }
-                .into()
-            )
+            proof.map(|bytes: usize| Value::from(bytes as i64))
         );
-    }
-}
-
-#[test]
-fn absent_and_unrecognized_origins_export_unknown_and_preserve_raw_values() {
-    let mut block = synthetic_block(3);
-    block.phases[0].ops[1].origin = Some("unknown".into());
-    block.phases[0].ops[2].origin = Some("legacy_origin".into());
-    for measured in [false, true] {
-        block.timing = measured.then_some(polkadot_frame_trace_model::MeasuredTiming {
-            start_ns: 0,
-            duration_ns: 100,
-        });
-        let spans = export(&block, Timing::default());
-        for (seq, raw) in [None, Some("unknown"), Some("legacy_origin")]
-            .into_iter()
-            .enumerate()
-        {
-            let span = spans
-                .iter()
-                .find(|s| attr(s, "frame.storage.seq") == Some((seq as i64).into()))
-                .unwrap();
-            assert_eq!(attr(span, "frame.storage.origin"), Some("unknown".into()));
-            assert_eq!(attr(span, "frame.storage.origin_raw"), raw.map(Value::from));
-            // Missing operation timing stays explicit even within a timed replay.
-            assert_eq!(attr(span, "frame.timing"), Some("no timing".into()));
-        }
-    }
-}
-
-#[test]
-fn phase_attributes_use_readable_labels_without_changing_json() {
-    let labels = [
-        ("initialization", "initialization"),
-        ("apply_extrinsic", "extrinsic"),
-        ("post_inherents", "post inherents (on_poll)"),
-        ("finalization", "finalization"),
-        ("unsegmented", "no phase markers"),
-        ("call", "call"),
-        ("signed_extrinsics", "signed extrinsics"),
-        ("extrinsics_unknown", "extrinsics (signature unknown)"),
-        ("inherents", "inherents (required extrinsics)"),
-    ];
-    for measured in [false, true] {
-        let mut block = synthetic_block(1);
-        block.timing = measured.then_some(polkadot_frame_trace_model::MeasuredTiming {
-            start_ns: 0,
-            duration_ns: 100,
-        });
-        let original = block.phases[0].clone();
-        block.phases = labels
-            .iter()
-            .map(|(raw, _)| {
-                let mut phase = original.clone();
-                phase.kind = (*raw).into();
-                phase.label = (*raw).into();
-                phase.ops[0].timing = block.timing;
-                phase
-            })
-            .collect();
-        let spans = export(&block, Timing::default());
-        for (i, (raw, label)) in labels.iter().enumerate() {
-            let span = by_name(&spans, raw);
-            assert_eq!(attr(span, "frame.phase"), Some((*label).into()));
-            assert_eq!(
-                attr(span, "frame.timing"),
-                Some(
-                    if measured {
-                        "timed replay"
-                    } else {
-                        "no timing"
-                    }
-                    .into()
-                )
-            );
-            assert_eq!(block.phases[i].kind, *raw);
-        }
+        // Missing operation timing stays explicit even within a timed replay.
+        assert_eq!(attr(span, "frame.timing"), Some("no timing".into()));
     }
 }

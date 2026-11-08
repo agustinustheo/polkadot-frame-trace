@@ -97,14 +97,6 @@ impl TracedBlock {
     pub fn totals(&self) -> Stats {
         Stats::of(&self.ops)
     }
-
-    /// Number of `ApplyExtrinsic` phases.
-    pub fn extrinsic_count(&self) -> usize {
-        self.phases
-            .iter()
-            .filter(|p| p.kind.extrinsic_index().is_some())
-            .count()
-    }
 }
 
 /// Builds a phase: marks duplicate reads among its own ops and computes its stats.

@@ -27,12 +27,10 @@ Tests also change the root, drop nodes and change parent headers, and check that
 | Directory | State | Method | Artifact bytes |
 | --- | --- | --- | ---: |
 | `call-people-nonce` | People #1 / `e1e91429…` | `AccountNonceApi_account_nonce` (Alice) | 2,425 |
-| `call-people-fee` | People #1 / `e1e91429…` | `TransactionPaymentApi_query_info` (the saved transfer, plus its length) | 2,009 |
-| `call-people-metadata` | People #1 / `e1e91429…` | `Metadata_metadata_versions` | 1,662 |
 | `call-westend-nonce` | Westend Asset Hub #18,561,759 / `60c39d38…` | `AccountNonceApi_account_nonce` (Alice) | 6,302 |
 | `call-westend-dryrun` | Westend Asset Hub #18,563,012 | `DryRunApi_dry_run_call` (root `System.set_code([])`) | 5,066 |
 
-The People calls run on the parent state of `people-transfer`, not on block #2's result. Their recorded results are local runs, not node data. Regenerate them offline:
+The People call runs on the parent state of `people-transfer`, not on block #2's result. Its recorded result is a local run, not node data. Regenerate it offline:
 
 ```sh
 cargo +1.93.0 run -p polkadot-frame-trace-replay --example record_calls

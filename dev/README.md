@@ -41,10 +41,8 @@ To support such a chain:
 
 Every added function is offered to every chain. Only add functions that the node of that
 chain also provides, so polkadot-frame-trace never accepts a runtime the chain itself could not run.
-The unit tests `unknown_host_import_error_names_the_import` and
-`missing_host_function_names_stop_at_the_end_of_the_list`, the integration test
-`missing_host_function_is_named_through_runtime_override` and the CLI test
-`missing_host_function_fails_with_its_name_and_no_metadata_notice` cover the error path.
+The CLI test `unusable_runtime_override_files_and_missing_host_functions_are_named` covers the
+error path.
 `fixtures/wasm/missing-host-function.wasm` reproduces it from the command line.
 
 ## Live tests

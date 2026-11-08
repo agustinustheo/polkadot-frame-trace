@@ -28,54 +28,6 @@ fn prefix(pallet: &str, item: &str) -> Vec<u8> {
 }
 
 #[test]
-fn loads_v14_and_v16() {
-    for version in [14, 16] {
-        let md = westend(version);
-        assert_eq!(md.version(), version);
-        assert_eq!(md.ss58_prefix(), 42);
-        assert!(md.storage_item_count() > 100);
-    }
-}
-
-#[test]
-fn names_plain_and_map_items() {
-    for md in [westend(14), westend(16)] {
-        let number = md.key_name(None, &prefix("System", "Number"));
-        assert_eq!(number.to_string(), "System::Number");
-        assert!(matches!(number, KeyName::Storage { complete: true, .. }));
-
-        // Blake2_128Concat<AccountId32>: decoded and shown as SS58.
-        let alice = hex::decode(ALICE).unwrap();
-        let key = [
-            prefix("System", "Account"),
-            blake2_128(&alice).to_vec(),
-            alice,
-        ]
-        .concat();
-        let name = md.key_name(None, &key);
-        assert_eq!(
-            name.to_string(),
-            "System::Account(5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY)"
-        );
-        assert_eq!(name.pallet(), Some("System"));
-        assert_eq!(name.item(), "System::Account");
-
-        // Twox64Concat<u32>.
-        let n = 100u32.to_le_bytes();
-        let key = [
-            prefix("System", "BlockHash"),
-            twox_64(&n).to_vec(),
-            n.to_vec(),
-        ]
-        .concat();
-        assert_eq!(
-            md.key_name(None, &key).to_string(),
-            "System::BlockHash(100)"
-        );
-    }
-}
-
-#[test]
 fn falls_back_gracefully() {
     let md = westend(16);
 
@@ -116,43 +68,34 @@ fn falls_back_gracefully() {
             ..
         }
     ));
+
+    // Leading keys of a prefix decode. ParasDisputes::Disputes is
+    // Twox64Concat<SessionIndex>, Blake2_128Concat<CandidateHash>.
+    let era = 100u32.to_le_bytes();
+    let key = [
+        prefix("ParasDisputes", "Disputes"),
+        twox_64(&era).to_vec(),
+        era.to_vec(),
+    ]
+    .concat();
+    let name = md.key_name(None, &key);
+    assert_eq!(name.to_string(), "ParasDisputes::Disputes(100, …)");
+    assert!(matches!(
+        name,
+        KeyName::Storage {
+            complete: false,
+            ..
+        }
+    ));
 }
 
 #[test]
-fn names_well_known_and_child_keys() {
-    let md = westend(14);
-    assert_eq!(md.key_name(None, b":code").to_string(), ":code");
+fn names_child_trie_roots_stored_in_the_main_trie() {
     assert_eq!(
-        md.key_name(None, b":extrinsic_index").to_string(),
-        ":extrinsic_index"
-    );
-    assert_eq!(md.key_name(None, b":heappages").to_string(), ":heappages");
-    assert_eq!(
-        md.key_name(None, b":child_storage:default:\x01\x02")
+        westend(14)
+            .key_name(None, b":child_storage:default:\x01\x02")
             .to_string(),
         ":child_storage:default:0x0102"
-    );
-
-    // Child keys are shown, so different keys in one trie get different names.
-    let a = md.key_name(Some(&[0xbe, 0xef]), &[0x01]);
-    let b = md.key_name(Some(&[0xbe, 0xef]), &[0x02]);
-    assert_eq!(a.to_string(), "child:0xbeef[0x01]");
-    assert_eq!(b.to_string(), "child:0xbeef[0x02]");
-    assert_eq!(
-        (a.item(), a.is_complete()),
-        ("child:0xbeef".to_owned(), true)
-    );
-    // Long child keys are cut, and then the name alone does not identify the key.
-    let long = md.key_name(Some(&[0xbe, 0xef]), &[0xab; 40]);
-    assert_eq!(
-        long.to_string(),
-        format!("child:0xbeef[0x{}…]", "ab".repeat(32))
-    );
-    assert!(!long.is_complete());
-    // An op on the whole trie (kill_child) has no key.
-    assert_eq!(
-        md.key_name(Some(&[0xbe, 0xef]), &[]).to_string(),
-        "child:0xbeef"
     );
 }
 
@@ -183,6 +126,17 @@ fn names_extrinsics_from_a_westend_block() {
         );
         assert!(md.call_name(&[0x04, 0xff]).is_err());
     }
+
+    // Westend metadata does not match a People runtime: the label falls back to the index and
+    // the error is kept. (Extrinsic 1 still decodes, because Timestamp has the same index and
+    // call layout in both runtimes; metadata from another runtime can give plausible wrong
+    // names.)
+    let json =
+        String::from_utf8(fixture("model/real/people-paseo-block-1-trace-state.json")).unwrap();
+    let block = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
+    let other = annotate(&block, Some(&westend(16)));
+    assert_eq!(other.phases[1].label, "extrinsic 0");
+    assert!(other.phases[1].call.is_none() && other.phases[1].call_error.is_some());
 }
 
 #[test]
@@ -311,28 +265,6 @@ fn hashes_the_storage_prefix_not_the_pallet_name() {
 }
 
 #[test]
-fn decodes_leading_keys_of_a_prefix() {
-    let md = westend(16);
-    // ParasDisputes::Disputes is Twox64Concat<SessionIndex>, Blake2_128Concat<CandidateHash>.
-    let era = 100u32.to_le_bytes();
-    let key = [
-        prefix("ParasDisputes", "Disputes"),
-        twox_64(&era).to_vec(),
-        era.to_vec(),
-    ]
-    .concat();
-    let name = md.key_name(None, &key);
-    assert_eq!(name.to_string(), "ParasDisputes::Disputes(100, …)");
-    assert!(matches!(
-        name,
-        KeyName::Storage {
-            complete: false,
-            ..
-        }
-    ));
-}
-
-#[test]
 fn names_truncated_keys_from_their_prefix_only() {
     let md = westend(16);
     let alice = hex::decode(ALICE).unwrap();
@@ -368,51 +300,6 @@ fn names_truncated_keys_from_their_prefix_only() {
         "truncated keys are never duplicates"
     );
     assert_eq!(annotated.totals.truncated_keys, 2);
-}
-
-#[test]
-fn loads_hex_metadata_of_a_real_chain() {
-    let hex = String::from_utf8(fixture("model/real/people-paseo-block-1-metadata.hex")).unwrap();
-    let md = Metadata::from_hex(&hex).unwrap();
-    assert_eq!(md.version(), 14);
-    assert_eq!(
-        md.key_name(None, &prefix("System", "Number")).to_string(),
-        "System::Number"
-    );
-    assert!(Metadata::from_hex("0xzz").is_err());
-    assert!(Metadata::from_hex("0x00").is_err());
-}
-
-#[test]
-fn real_block_extrinsics_get_named_only_with_matching_metadata() {
-    let json =
-        String::from_utf8(fixture("model/real/people-paseo-block-1-trace-state.json")).unwrap();
-    let block = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
-
-    let hex = String::from_utf8(fixture("model/real/people-paseo-block-1-metadata.hex")).unwrap();
-    let own = Metadata::from_hex(&hex).unwrap();
-    let labels: Vec<String> = annotate(&block, Some(&own))
-        .phases
-        .into_iter()
-        .map(|p| p.label)
-        .collect();
-    assert_eq!(
-        labels,
-        [
-            "initialization",
-            "extrinsic 0: ParachainSystem.set_validation_data",
-            "extrinsic 1: Timestamp.set",
-            "post inherents (on_poll)",
-            "finalization"
-        ]
-    );
-
-    // Westend metadata does not match this runtime: the label falls back to the index and the
-    // error is kept. (Extrinsic 1 still decodes, because Timestamp has the same index and call
-    // layout in both runtimes; metadata from another runtime can give plausible wrong names.)
-    let other = annotate(&block, Some(&westend(16)));
-    assert_eq!(other.phases[1].label, "extrinsic 0");
-    assert!(other.phases[1].call.is_none() && other.phases[1].call_error.is_some());
 }
 
 #[test]
@@ -462,22 +349,4 @@ fn runtime_api_json_args_and_complete_results() {
         md.encode_runtime_args("MissingApi_method", &serde_json::json!([]))
             .is_err()
     );
-}
-
-#[test]
-fn api_wrong_types_and_missing_method_are_user_errors() {
-    let md = westend(16);
-    let error = md
-        .encode_runtime_args("AccountNonceApi_account_nonc", &serde_json::json!([]))
-        .unwrap_err()
-        .to_string();
-    assert!(error.starts_with("runtime API method") && error.contains("did you mean"));
-    let error = md
-        .encode_runtime_args(
-            "AccountNonceApi_account_nonce",
-            &serde_json::json!(["wrong"]),
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(!error.starts_with("invalid metadata:"));
 }

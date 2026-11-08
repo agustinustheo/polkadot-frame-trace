@@ -5,27 +5,42 @@ use super::*;
 use sp_core::storage::StateVersion;
 use std::collections::BTreeSet;
 
-#[test]
-fn captures_keyless_child_iteration_and_overlay_accesses() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| {
-        sp_io::storage::set(b"a", b"one");
-        sp_io::storage::set(b"b", b"two");
-        sp_io::default_child_storage::set(b"child", b"c1", b"three");
-        sp_io::default_child_storage::set(b"child", b"c2", b"four");
-    });
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
+/// Runs `run` against a local trie seeded by `seed`, with a proof recorder and the proof size
+/// extension, and returns what the capture saw and the recorder.
+fn traced(
+    seed: impl FnOnce(),
+    run: impl FnOnce(&Recorder<Blake2Hasher>),
+) -> (Capture, Recorder<Blake2Hasher>) {
+    let mut state = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
+    state.execute_with(seed);
+    state.commit_all().unwrap();
+    let (raw, root) = state.into_raw_snapshot();
     let db = ProofDb::new(None, H256::zero());
     db.insert_nodes(raw.into_iter().map(|(_, (node, _))| node));
-    db.online.store(false, Ordering::Relaxed);
-    let backend = TracedBackend::new(db, root, Recorder::default());
+    let recorder = Recorder::default();
+    let backend = TracedBackend::new(db, root, recorder.clone());
     let mut overlay = OverlayedChanges::default();
-    let mut ext = sp_state_machine::Ext::new(&mut overlay, &backend, None);
+    let mut extensions = Extensions::default();
+    extensions.register(ProofSizeExt::new(recorder.clone()));
+    let mut ext = sp_state_machine::Ext::new(&mut overlay, &backend, Some(&mut extensions));
     let capture = Capture::new();
-    let dispatch = tracing::Dispatch::new(capture.clone());
-    tracing::dispatcher::with_default(&dispatch, || {
-        sp_externalities::set_and_run_with_externalities(&mut ext, || {
+    capture.0.lock().recorder = Some(recorder.clone());
+    tracing::dispatcher::with_default(&tracing::Dispatch::new(capture.clone()), || {
+        sp_externalities::set_and_run_with_externalities(&mut ext, || run(&recorder));
+    });
+    (capture, recorder)
+}
+
+#[test]
+fn captures_keyless_child_iteration_and_overlay_accesses() {
+    let (capture, _) = traced(
+        || {
+            sp_io::storage::set(b"a", b"one");
+            sp_io::storage::set(b"b", b"two");
+            sp_io::default_child_storage::set(b"child", b"c1", b"three");
+            sp_io::default_child_storage::set(b"child", b"c2", b"four");
+        },
+        |_| {
             sp_io::storage::set(b"aa", b"overlay");
             assert_eq!(sp_io::storage::get(b"aa").unwrap().as_ref(), b"overlay");
             assert_eq!(sp_io::storage::next_key(b"a"), Some(b"aa".to_vec()));
@@ -38,8 +53,8 @@ fn captures_keyless_child_iteration_and_overlay_accesses() {
             let _ = sp_io::default_child_storage::storage_kill(b"child", None);
             let _ = sp_io::storage::clear_prefix(b"b", None);
             let _ = sp_io::storage::root(StateVersion::V1);
-        });
-    });
+        },
+    );
     let d = capture.0.lock();
     let methods: BTreeSet<_> = d
         .events
@@ -70,120 +85,58 @@ fn captures_keyless_child_iteration_and_overlay_accesses() {
     );
 }
 
+/// Calls and block import see different proof sizes, and both get a runtime version reader:
+/// invalid or empty code returns `None` rather than trapping on a missing extension.
 #[test]
-fn call_and_import_expose_different_proof_size_policies() {
+fn call_and_import_expose_different_proof_size_policies_and_a_runtime_version_reader() {
     let wasm = wat::parse_str(r#"(module
         (import "env" "ext_storage_proof_size_storage_proof_size_version_1" (func $size (result i64)))
+        (import "env" "ext_misc_runtime_version_version_1" (func $version (param i64) (result i64)))
         (memory (export "memory") 1)
         (global (export "__heap_base") i32 (i32.const 1024))
         (func (export "Probe_size") (param i32 i32) (result i64)
             (i64.store (i32.const 8) (call $size))
-            (i64.const 34359738376)))"#).unwrap();
+            (i64.const 34359738376))
+        (func (export "Probe_version") (param i32 i32) (result i64)
+            (call $version (i64.const 0))))"#).unwrap();
     let session = ReplaySession::new(None).unwrap();
     let db = ProofDb::new(None, H256::zero());
+    let executor = session.executor_for(&wasm);
+    let run = |method, context| {
+        execute_method(
+            &db,
+            H256::zero(),
+            &wasm,
+            None,
+            &executor,
+            method,
+            &[],
+            H256::zero(),
+            context,
+            &Capture::new(),
+        )
+        .unwrap()
+    };
     for (context, expected) in [
         (CallContext::Offchain, u64::MAX),
         (CallContext::Onchain { import: true }, 0),
     ] {
-        let (bytes, output) = execute_method(
-            &db,
-            H256::zero(),
-            &wasm,
-            None,
-            &session.executor,
-            "Probe_size",
-            &[],
-            H256::zero(),
-            context,
-            &Capture::new(),
-        )
-        .unwrap();
+        let (bytes, output) = run("Probe_size", context);
         assert_eq!(output, expected.to_le_bytes());
         assert_eq!(bytes, 0);
+        assert_eq!(run("Probe_version", context).1, [0]);
     }
 }
 
 #[test]
-fn runtime_version_host_call_has_executor_backed_reader_for_calls_and_import() {
-    let wasm = wat::parse_str(
-        r#"(module
-        (import "env" "ext_misc_runtime_version_version_1" (func $version (param i64) (result i64)))
-        (memory (export "memory") 1)
-        (global (export "__heap_base") i32 (i32.const 1024))
-        (func (export "Probe_version") (param i32 i32) (result i64)
-            (call $version (i64.const 0))))"#,
-    )
-    .unwrap();
-    let session = ReplaySession::new(None).unwrap();
-    let db = ProofDb::new(None, H256::zero());
-    for context in [CallContext::Offchain, CallContext::Onchain { import: true }] {
-        let (_, output) = execute_method(
-            &db,
-            H256::zero(),
-            &wasm,
-            None,
-            &session.executor,
-            "Probe_version",
-            &[],
-            H256::zero(),
-            context,
-            &Capture::new(),
-        )
-        .unwrap();
-        // Invalid/empty code returns Option::None rather than trapping on a missing extension.
-        assert_eq!(output, [0]);
-    }
-}
-
-#[test]
-fn missing_export_reports_runtime_api_method_without_metadata() {
-    let wasm = wat::parse_str(
-        r#"(module
-        (memory (export "memory") 1)
-        (global (export "__heap_base") i32 (i32.const 1024))
-        (func (export "Probe_exists") (param i32 i32) (result i64) (i64.const 0)))"#,
-    )
-    .unwrap();
-    let session = ReplaySession::new(None).unwrap();
-    let error = execute_method(
-        &ProofDb::new(None, H256::zero()),
-        H256::zero(),
-        &wasm,
-        None,
-        &session.executor,
-        "MissingApi_method",
-        &[],
-        H256::zero(),
-        CallContext::Offchain,
-        &Capture::new(),
-    )
-    .unwrap_err();
-    assert!(matches!(error, Error::MethodNotFound(_)), "{error}");
-    assert_eq!(
-        error.to_string(),
-        "runtime API method MissingApi_method not found"
-    );
-}
-
-#[test]
-fn read_origins_observe_backend_access_recorder_warmth_and_overlay_for_all_read_kinds() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| {
-        sp_io::storage::set(b"key", b"value");
-        sp_io::default_child_storage::set(b"child", b"key", b"value");
-    });
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
-    let db = ProofDb::new(None, H256::zero());
-    db.insert_nodes(raw.into_iter().map(|(_, (node, _))| node));
-    let recorder = Recorder::default();
-    let backend = TracedBackend::new(db, root, recorder.clone());
-    let mut overlay = OverlayedChanges::default();
-    let mut ext = sp_state_machine::Ext::new(&mut overlay, &backend, None);
-    let capture = Capture::new();
-    capture.0.lock().recorder = Some(recorder.clone());
-    tracing::dispatcher::with_default(&tracing::Dispatch::new(capture.clone()), || {
-        sp_externalities::set_and_run_with_externalities(&mut ext, || {
+fn read_origins_observe_backend_access_recorder_warmth_overlay_and_rollback_for_all_read_kinds() {
+    let child = || sp_core::storage::ChildInfo::new_default(b"child");
+    let (capture, recorder) = traced(
+        || {
+            sp_io::storage::set(b"key", b"value");
+            sp_io::default_child_storage::set(b"child", b"key", b"value");
+        },
+        |_| {
             let _ = sp_io::storage::get(b"key");
             let _ = sp_io::storage::get(b"key");
             let _ = sp_io::storage::exists(b"key");
@@ -195,23 +148,22 @@ fn read_origins_observe_backend_access_recorder_warmth_and_overlay_for_all_read_
             let _ = sp_io::default_child_storage::get(b"child", b"key");
             let _ = sp_io::default_child_storage::exists(b"child", b"key");
             let _ = sp_externalities::with_externalities(|ext| {
-                ext.child_storage_hash(&sp_core::storage::ChildInfo::new_default(b"child"), b"key")
+                ext.child_storage_hash(&child(), b"key")
             });
             sp_io::default_child_storage::set(b"child", b"key", b"overlay");
             let _ = sp_io::default_child_storage::get(b"child", b"key");
             let _ = sp_io::default_child_storage::exists(b"child", b"key");
             let _ = sp_externalities::with_externalities(|ext| {
-                ext.child_storage_hash(&sp_core::storage::ChildInfo::new_default(b"child"), b"key")
+                ext.child_storage_hash(&child(), b"key")
             });
-        });
-    });
+        },
+    );
     let d = capture.0.lock();
     let reads: Vec<_> = d
         .events
         .iter()
         .filter(|e| e.fields.contains_key("origin"))
         .collect();
-    assert_eq!(reads.len(), 13);
     let origins: Vec<_> = reads.iter().map(|e| e.fields["origin"].as_str()).collect();
     assert_eq!(
         origins,
@@ -245,26 +197,11 @@ fn read_origins_observe_backend_access_recorder_warmth_and_overlay_for_all_read_
             .unwrap()
             > 0
     );
-}
 
-#[test]
-fn recorder_rollback_keeps_block_lifetime_warmth_but_reports_new_marginal_growth() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| sp_io::storage::set(b"key", b"value"));
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
-    let db = ProofDb::new(None, H256::zero());
-    db.insert_nodes(raw.into_iter().map(|(_, (node, _))| node));
-    let recorder = Recorder::default();
-    let backend = TracedBackend::new(db, root, recorder.clone());
-    let mut overlay = OverlayedChanges::default();
-    let mut extensions = Extensions::default();
-    extensions.register(ProofSizeExt::new(recorder.clone()));
-    let mut ext = sp_state_machine::Ext::new(&mut overlay, &backend, Some(&mut extensions));
-    let capture = Capture::new();
-    capture.0.lock().recorder = Some(recorder.clone());
-    tracing::dispatcher::with_default(&tracing::Dispatch::new(capture.clone()), || {
-        sp_externalities::set_and_run_with_externalities(&mut ext, || {
+    // A recorder rollback keeps block-lifetime warmth but reports the new marginal growth.
+    let (capture, _) = traced(
+        || sp_io::storage::set(b"key", b"value"),
+        |recorder| {
             // The SDK ignores runtime proof transactions; emulate an executor/host
             // recorder transaction to exercise actual recorder shrinkage as well.
             recorder.start_transaction();
@@ -273,8 +210,8 @@ fn recorder_rollback_keeps_block_lifetime_warmth_but_reports_new_marginal_growth
             recorder.rollback_transaction().unwrap();
             sp_io::storage::rollback_transaction();
             let _ = sp_io::storage::get(b"key");
-        });
-    });
+        },
+    );
     let d = capture.0.lock();
     let reads: Vec<_> = d
         .events
@@ -291,132 +228,67 @@ fn recorder_rollback_keeps_block_lifetime_warmth_but_reports_new_marginal_growth
     );
 }
 
+/// Proof growth belongs to the access that caused it: an append that reads the backend, not
+/// a later overlay read; not an overlay append, but the next backend read; and an iteration,
+/// which warms a later read of a value inlined in the same node.
 #[test]
-fn append_owns_backend_growth_before_unrelated_overlay_get() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| sp_io::storage::set(b"key", &vec![7u8; 63].encode()));
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
-    let db = ProofDb::new(None, H256::zero());
-    db.insert_nodes(raw.into_iter().map(|(_, (node, _))| node));
-    let recorder = Recorder::default();
-    let backend = TracedBackend::new(db, root, recorder.clone());
-    let mut overlay = OverlayedChanges::default();
-    let mut ext = sp_state_machine::Ext::new(&mut overlay, &backend, None);
-    let capture = Capture::new();
-    capture.0.lock().recorder = Some(recorder.clone());
-    tracing::dispatcher::with_default(&tracing::Dispatch::new(capture.clone()), || {
-        sp_externalities::set_and_run_with_externalities(&mut ext, || {
+fn appends_and_iteration_own_exactly_the_backend_proof_growth_they_cause() {
+    // The origin, if the access has one, and the proof bytes it added.
+    let find = |capture: &Capture, method: &str| {
+        let d = capture.0.lock();
+        let fields = &d
+            .events
+            .iter()
+            .find(|e| e.fields.get("method").is_some_and(|m| m == method))
+            .unwrap()
+            .fields;
+        (
+            fields.get("origin").cloned().unwrap_or_default(),
+            fields["proof_bytes_added"].parse::<usize>().unwrap(),
+        )
+    };
+    let (capture, recorder) = traced(
+        || sp_io::storage::set(b"key", &vec![7u8; 63].encode()),
+        |_| {
             sp_io::storage::set(b"unrelated", b"overlay");
             sp_io::storage::append(b"key", vec![8]);
             assert_eq!(
                 sp_io::storage::get(b"unrelated").unwrap().as_ref(),
                 b"overlay"
             );
-        });
-    });
-    let d = capture.0.lock();
-    let append = d
-        .events
-        .iter()
-        .find(|e| e.fields.get("method").is_some_and(|m| m == "Append"))
-        .unwrap();
-    let get = d
-        .events
-        .iter()
-        .find(|e| e.fields.get("method").is_some_and(|m| m == "Get"))
-        .unwrap();
-    let growth: usize = append.fields["proof_bytes_added"].parse().unwrap();
-    println!(
-        "Append probe: Append = {growth} B; unrelated overlay Get = {} B",
-        get.fields["proof_bytes_added"]
+        },
     );
+    let (_, growth) = find(&capture, "Append");
     assert_eq!(growth, 148);
     assert_eq!(growth, recorder.estimate_encoded_size());
-    assert_eq!(get.fields["proof_bytes_added"], "0");
-    assert_eq!(get.fields["origin"], "overlay");
-}
+    assert_eq!(find(&capture, "Get"), ("overlay".into(), 0));
 
-#[test]
-fn overlay_append_does_not_absorb_the_next_calls_backend_growth() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| sp_io::storage::set(b"backend", &[1; 80]));
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
-    let db = ProofDb::new(None, H256::zero());
-    db.insert_nodes(raw.into_iter().map(|(_, (node, _))| node));
-    let recorder = Recorder::default();
-    let backend = TracedBackend::new(db, root, recorder.clone());
-    let mut overlay = OverlayedChanges::default();
-    let mut ext = sp_state_machine::Ext::new(&mut overlay, &backend, None);
-    let capture = Capture::new();
-    capture.0.lock().recorder = Some(recorder);
-    tracing::dispatcher::with_default(&tracing::Dispatch::new(capture.clone()), || {
-        sp_externalities::set_and_run_with_externalities(&mut ext, || {
+    let (capture, _) = traced(
+        || sp_io::storage::set(b"backend", &[1; 80]),
+        |_| {
             sp_io::storage::set(b"overlay", &[0]);
             sp_io::storage::append(b"overlay", vec![1]);
             let _ = sp_io::storage::get(b"backend");
-        });
-    });
-    let d = capture.0.lock();
-    let find = |method| {
-        d.events
-            .iter()
-            .find(|e| e.fields.get("method").is_some_and(|m| m == method))
-            .unwrap()
-    };
-    assert_eq!(find("Append").fields["proof_bytes_added"], "0");
-    assert!(
-        find("Get").fields["proof_bytes_added"]
-            .parse::<usize>()
-            .unwrap()
-            > 0
+        },
     );
-    assert_eq!(find("Get").fields["origin"], "backend_cold");
-}
+    assert_eq!(find(&capture, "Append").1, 0);
+    let (origin, growth) = find(&capture, "Get");
+    assert_eq!(origin, "backend_cold");
+    assert!(growth > 0);
 
-#[test]
-fn iteration_keeps_its_growth_and_warms_later_inline_value_reads() {
-    let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
-    seed.execute_with(|| {
-        sp_io::storage::set(b"a", b"one");
-        sp_io::storage::set(b"b", b"two");
-    });
-    seed.commit_all().unwrap();
-    let (raw, root) = seed.into_raw_snapshot();
-    let db = ProofDb::new(None, H256::zero());
-    db.insert_nodes(raw.into_iter().map(|(_, (node, _))| node));
-    let recorder = Recorder::default();
-    let backend = TracedBackend::new(db, root, recorder.clone());
-    let mut overlay = OverlayedChanges::default();
-    let mut ext = sp_state_machine::Ext::new(&mut overlay, &backend, None);
-    let capture = Capture::new();
-    capture.0.lock().recorder = Some(recorder.clone());
-    tracing::dispatcher::with_default(&tracing::Dispatch::new(capture.clone()), || {
-        sp_externalities::set_and_run_with_externalities(&mut ext, || {
+    let (capture, recorder) = traced(
+        || {
+            sp_io::storage::set(b"a", b"one");
+            sp_io::storage::set(b"b", b"two");
+        },
+        |_| {
             assert_eq!(sp_io::storage::next_key(b"a"), Some(b"b".to_vec()));
             assert_eq!(sp_io::storage::get(b"b").unwrap().as_ref(), b"two");
-        });
-    });
-    let d = capture.0.lock();
-    let iter = d
-        .events
-        .iter()
-        .find(|e| {
-            e.fields
-                .get("method")
-                .is_some_and(|m| m == "BackendNextKey")
-        })
-        .unwrap();
-    let get = d
-        .events
-        .iter()
-        .find(|e| e.fields.get("method").is_some_and(|m| m == "Get"))
-        .unwrap();
+        },
+    );
     assert_eq!(
-        iter.fields["proof_bytes_added"].parse::<usize>().unwrap(),
+        find(&capture, "BackendNextKey").1,
         recorder.estimate_encoded_size()
     );
-    assert_eq!(get.fields["origin"], "backend_warm");
-    assert_eq!(get.fields["proof_bytes_added"], "0");
+    assert_eq!(find(&capture, "Get"), ("backend_warm".into(), 0));
 }

@@ -3569,7 +3569,6 @@ dependencies = [
  "parity-scale-codec",
  "serde",
  "serde_json",
- "sp-crypto-hashing",
  "thiserror 2.0.21",
 ]
 

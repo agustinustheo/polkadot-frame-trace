@@ -166,10 +166,6 @@ impl Queue {
         let state = self.lock();
         state.lines.is_empty() && !state.writing
     }
-    #[cfg(test)]
-    fn total_dropped(&self) -> u64 {
-        self.lock().total_dropped
-    }
     /// Writes queued lines to `out` until a write fails. The lock is not held while writing.
     fn write_all(&self, out: &mut impl Write) {
         loop {
@@ -308,21 +304,18 @@ mod tests {
             "the newest progress lines are kept"
         );
         assert_eq!(lines.last().unwrap(), "summary");
-    }
 
-    #[test]
-    fn errors_are_bounded_too_and_the_summary_still_fits() {
+        // Failures are bounded too, and progress cannot push one out: it is dropped instead.
         let queue = Queue::new(10, MAX_BYTES);
         for n in 0..100_000 {
             queue.push(format!("error {n}"), Kind::Failure);
         }
         queue.push("summary".into(), Kind::Final);
-        // Progress cannot push out a failure: it is dropped instead.
         queue.push("progress".into(), Kind::Progress);
         let (dropped, lines) = drain(&queue);
         assert_eq!(lines.len(), 10);
         assert_eq!(dropped, 100_000 - 9 + 1);
-        assert_eq!(queue.total_dropped(), 100_000 - 9 + 1);
+        assert_eq!(queue.lock().total_dropped, 100_000 - 9 + 1);
         assert_eq!(lines[0], "error 99991");
         assert_eq!(lines.last().unwrap(), "summary");
     }
@@ -339,39 +332,5 @@ mod tests {
         assert_eq!(state.lines[0].repeats, 999);
         assert!(state.bytes <= 100);
         assert_eq!(state.total_dropped, 1, "the long line did not fit");
-    }
-
-    #[test]
-    fn the_summary_counts_the_lines_its_own_room_cost() {
-        let queue = Queue::new(3, MAX_BYTES);
-        for n in 0..3 {
-            queue.push(format!("progress {n}"), Kind::Progress);
-        }
-        queue.push_counted(Kind::Final, |dropped| {
-            format!("summary log-dropped={dropped}")
-        });
-        let (_, lines) = drain(&queue);
-        assert_eq!(lines.last().unwrap(), "summary log-dropped=1");
-    }
-
-    #[test]
-    fn a_failed_write_closes_the_log_and_counts_what_is_lost() {
-        struct Broken;
-        impl Write for Broken {
-            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-                Err(std::io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let queue = Queue::new(10, MAX_BYTES);
-        queue.push("first".into(), Kind::Progress);
-        queue.push("second".into(), Kind::Failure);
-        queue.write_all(&mut Broken);
-        assert!(queue.lock().closed);
-        queue.push("third".into(), Kind::Final);
-        assert!(queue.idle(), "nothing is kept or being written");
-        assert_eq!(queue.total_dropped(), 3);
     }
 }

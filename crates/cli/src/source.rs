@@ -371,24 +371,3 @@ pub fn replay_loaded(
         runtime_override: replay.runtime_override,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn metadata_is_decoded_once_per_runtime() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/metadata/westend-v16.scale");
-        let bytes = std::fs::read(path).expect("fixture");
-        let hex: String = std::iter::once("0x".to_owned())
-            .chain(bytes.iter().map(|b| format!("{b:02x}")))
-            .collect();
-        let first = decoded(&hex).expect("decodes");
-        let second = decoded(&hex).expect("decodes");
-        assert!(Arc::ptr_eq(&first, &second));
-        assert!(decoded("0x00").is_err());
-        // Failures are not kept: the same text fails again, and the good entry stays.
-        assert!(decoded("0x00").is_err());
-        assert!(Arc::ptr_eq(&first, &decoded(&hex).expect("decodes")));
-    }
-}

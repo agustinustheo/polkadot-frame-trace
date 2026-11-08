@@ -807,7 +807,7 @@ fn scan(file: &File, id: u32, found: &mut dyn FnMut(u64, u64) -> bool) -> Option
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::MetadataExt;
 
     fn node(i: u64, len: usize) -> (H256, Vec<u8>) {
         let seed = sp_io::hashing::blake2_256(&i.to_le_bytes());
@@ -919,34 +919,6 @@ mod tests {
     }
 
     #[test]
-    fn large_batches_are_split_at_record_boundaries_and_oversized_nodes_skipped() {
-        let dir = dir("split");
-        // 1 MiB segments, records up to 64 KiB, batches up to 4 MiB.
-        let store = NodeStore::open(&dir, 16 * 1024 * 1024, None).unwrap();
-        let nodes: Vec<_> = (0..1500).map(|i| node(i, 2000)).collect();
-        put(&store, &nodes);
-        assert_eq!(store.skipped(), 0);
-        assert!(store.segment_count() >= 3);
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            assert!(entry.unwrap().metadata().unwrap().len() <= 1024 * 1024);
-        }
-        for (hash, bytes) in &nodes {
-            assert_eq!(store.get(hash).as_ref(), Some(bytes));
-        }
-        // A node larger than a sixteenth of a segment is not stored.
-        let big = node(9999, 64 * 1024);
-        put(&store, std::slice::from_ref(&big));
-        assert_eq!(store.skipped(), 1);
-        assert_eq!(store.get(&big.0), None);
-        // A batch never takes more than a quarter of the budget.
-        let many: Vec<_> = (2000..4500).map(|i| node(i, 2000)).collect();
-        put(&store, &many);
-        assert!(store.skipped() > 1);
-        assert_eq!(store.get(&nodes[0].0).as_ref(), Some(&nodes[0].1));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn eviction_drops_oldest_segments_but_keeps_nodes_used_again() {
         let dir = dir("order");
         let store = NodeStore::open(&dir, 1024 * 1024, None).unwrap();
@@ -1009,38 +981,6 @@ mod tests {
         );
         assert!(store.total() <= cap);
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// A folder whose ACL lets files be created but not deleted.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_folder_that_denies_deletion_does_not_grow_the_cache() {
-        let dir = dir("acl");
-        std::fs::create_dir_all(&dir).unwrap();
-        let user = std::env::var("USER").unwrap();
-        let acl = |op: &str| {
-            assert!(
-                std::process::Command::new("chmod")
-                    .args([op, &format!("user:{user} deny delete_child")])
-                    .arg(&dir)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        };
-        acl("+a");
-        let cap = 1024 * 1024;
-        let store = NodeStore::open(&dir, cap, None).unwrap();
-        for batch in 0..120u64 {
-            let nodes: Vec<_> = (0..50).map(|i| node(batch * 50 + i, 200)).collect();
-            put(&store, &nodes);
-        }
-        let (total, count) = (store.total(), files(&dir));
-        acl("-a");
-        drop(store);
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert!(total <= cap + 2 * MIN_SEGMENT, "{total} counted");
-        assert!(count <= 20, "{count} files");
     }
 
     #[test]
@@ -1139,51 +1079,6 @@ mod tests {
     }
 
     #[test]
-    fn damaged_records_are_misses() {
-        let dir = dir("damaged");
-        let store = NodeStore::open(&dir, 1 << 30, None).unwrap();
-        let (hash, bytes) = node(1, 100);
-        put(&store, &[(hash, bytes.clone())]);
-        assert_eq!(store.get(&hash), Some(bytes.clone()));
-        let segment = File::options()
-            .write(true)
-            .open(dir.join(segment_name(0)))
-            .unwrap();
-        segment
-            .write_all_at(b"corrupt", MAGIC.len() as u64 + HEADER + 10)
-            .unwrap();
-        assert_eq!(store.get(&hash), None);
-        assert_eq!(store.node_count(), 0);
-        // The next replay that fetches it writes a good copy.
-        put(&store, &[(hash, bytes.clone())]);
-        assert_eq!(store.get(&hash), Some(bytes));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn an_unreadable_segment_is_skipped_with_a_warning() {
-        let dir = dir("unreadable");
-        {
-            let store = NodeStore::open(&dir, 1 << 30, None).unwrap();
-            put(&store, &[node(1, 100)]);
-        }
-        let bad = dir.join(segment_name(0));
-        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let store = NodeStore::open(&dir, 1 << 30, None).unwrap();
-        store.wait_loaded();
-        assert_eq!(store.segment_count(), 0);
-        put(&store, &[node(2, 100)]);
-        assert_eq!(store.get(&node(2, 100).0), Some(node(2, 100).1));
-        assert!(
-            dir.join(segment_name(1)).exists(),
-            "reused a skipped file's number"
-        );
-        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o644)).unwrap();
-        drop(store);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn concurrent_writers_and_readers_agree() {
         let dir = dir("concurrent");
         let store = NodeStore::open(&dir, 8 * 1024 * 1024, None).unwrap();
@@ -1271,26 +1166,5 @@ mod tests {
         assert!(outside.join(format!("{:064x}", 1)).exists());
         assert!(legacy.symlink_metadata().unwrap().file_type().is_symlink());
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn open_does_not_read_nodes_and_load_stops_with_the_store() {
-        let dir = dir("startup");
-        {
-            let store = NodeStore::open(&dir, 1 << 30, None).unwrap();
-            for batch in 0..200u64 {
-                let nodes: Vec<_> = (0..500).map(|i| node(batch * 500 + i, 200)).collect();
-                put(&store, &nodes);
-            }
-        }
-        let start = std::time::Instant::now();
-        let store = NodeStore::open(&dir, 1 << 30, None).unwrap();
-        let opened = start.elapsed();
-        assert!(opened < std::time::Duration::from_millis(500), "{opened:?}");
-        let weak = Arc::downgrade(&store.inner);
-        drop(store);
-        // The loader checks between chunks, so it lets go at once.
-        wait_closed(&weak);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

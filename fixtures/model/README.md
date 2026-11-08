@@ -13,8 +13,6 @@ but are much shorter than a real block. Keys are real `twox128` hashes; values a
   `Balances.transfer_keep_alive` from Westend: duplicate `System::Account` read, `Append`, a
   child-trie read, `Exists`); `note_finished_extrinsics`; finalization with `ClearPrefix` and
   `StorageRoot`.
-- `no-extrinsics.json`: phase markers only, with `inherents_applied` running between the last
-  extrinsic marker and finalization.
 - `real/`: one block recorded from a real node, see [real/README.md](real/README.md).
 
 Other recorded fixtures live under `fixtures/<chain>/`.
@@ -28,5 +26,4 @@ cargo +1.93.0 build --locked -p polkadot-frame-trace
 polkadot-frame-trace block --from-file fixtures/model/two-extrinsics.json --json pre-e86f740.json
 ```
 
-No fields were removed to simulate legacy input. `summary.golden.txt` and
-`report.golden.txt` freeze v2 rendering of that actual legacy output at `--top 2`.
+No fields were removed to simulate legacy input.

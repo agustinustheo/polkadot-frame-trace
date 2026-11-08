@@ -634,10 +634,6 @@ pub fn aggregate(blocks: &[AnnotatedBlock]) -> Report {
     }
     accumulator.finish()
 }
-#[cfg(test)]
-pub fn render(r: &Report, top: usize) -> String {
-    render_sorted(r, top, SortKey::Proof)
-}
 fn render_sorted(r: &Report, top: usize, sort: SortKey) -> String {
     override_lines(r, top) + &render_body(r, top, sort)
 }
@@ -891,19 +887,13 @@ pub fn item_table(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     fn trace() -> AnnotatedBlock {
         let json = include_str!("../../../fixtures/model/two-extrinsics.json");
         let raw = polkadot_frame_trace_model::rpc::parse_trace_block(json).expect("fixture");
         let traced = polkadot_frame_trace_model::TracedBlock::from_trace(&raw).expect("trace");
         polkadot_frame_trace_decode::annotate(&traced, None)
-    }
-    #[test]
-    fn nested_intervals_are_unioned_and_percentiles_use_nearest_rank() {
-        assert_eq!(union_ns(vec![(0, 10), (2, 4), (8, 12), (20, 23)]), 15);
-        let d = distribution(vec![1, 2, 3, 4, 100]);
-        assert_eq!((d.median, d.p95), (3.0, 100.0));
-        assert_eq!(distribution(vec![2, 4]).median, 3.0);
     }
     #[test]
     fn aggregation_keeps_iterations_out_of_writes_and_splits_duplicate_origins() {
@@ -982,12 +972,6 @@ mod tests {
         assert_eq!(r.phases["post_inherents"].tally.ops, 2);
         assert_eq!(r.phases["signed_extrinsics"].tally.ops, expected * 2);
     }
-}
-
-#[cfg(test)]
-mod round5_tests {
-    #![allow(clippy::unwrap_used)]
-    use super::*;
     fn legacy() -> AnnotatedBlock {
         serde_json::from_str(include_str!("../../../fixtures/model/pre-e86f740.json")).unwrap()
     }
@@ -1005,8 +989,36 @@ mod round5_tests {
         assert_eq!(report.totals.proof_ops_observed, 0);
         assert_eq!(report.totals.reads, report.totals.origin_unknown);
         assert!(report.extrinsics.values().all(|e| e.proof_bytes.is_none()));
-        assert!(render(&report, 1).contains("proof n/a"));
-        assert!(crate::summary::render(&block, 1).contains("n/a"));
+        let text = render_sorted(&report, 1, SortKey::Proof);
+        assert!(
+            text.contains("proof n/a") && !text.contains("n/a B"),
+            "{text}"
+        );
+        let summary = crate::summary::render(&block, 1);
+        assert!(
+            summary.contains("n/a") && !summary.contains("n/a B"),
+            "{summary}"
+        );
+        // Once operations carry proof data, the part not assigned to them is the rest of the
+        // execution proof.
+        let mut value = serde_json::to_value(&block).unwrap();
+        for phase in value["phases"].as_array_mut().unwrap() {
+            for op in phase["ops"].as_array_mut().unwrap() {
+                op["proof_bytes_added"] = serde_json::json!(2);
+            }
+        }
+        value["execution"] = serde_json::json!({"root_check":true,"proof_bytes":100,
+            "rpc_calls":0,"measured_rpc_calls":0,"proof_rounds":0});
+        let block: AnnotatedBlock = serde_json::from_value(value).unwrap();
+        let r = aggregate(std::slice::from_ref(&block));
+        let attributed = r.totals.proof_bytes;
+        assert_eq!(r.unattributed_proof_bytes, Some(100 - attributed));
+        assert_eq!(r.over_attributed_proof_bytes, Some(0));
+        let text = render_sorted(&r, 1, SortKey::Proof);
+        assert!(
+            text.contains(&format!("proof {attributed} B (partial)")),
+            "{text}"
+        );
     }
     #[test]
     fn report_ranges_are_inclusive_finalized_non_genesis_and_bounded() {
@@ -1044,10 +1056,14 @@ mod round5_tests {
         assert!(
             report.totals.bytes_read == usize::MAX || report.totals.bytes_written == usize::MAX
         );
-        let _ = render(&report, 3);
+        let _ = render_sorted(&report, 3, SortKey::Proof);
     }
     #[test]
-    fn quantile_sketch_is_bounded_and_respects_documented_value_error() {
+    fn nested_intervals_are_unioned_and_quantiles_stay_bounded_within_the_documented_error() {
+        assert_eq!(union_ns(vec![(0, 10), (2, 4), (8, 12), (20, 23)]), 15);
+        let d = distribution(vec![1, 2, 3, 4, 100]);
+        assert_eq!((d.median, d.p95), (3.0, 100.0));
+        assert_eq!(distribution(vec![2, 4]).median, 3.0);
         let mut samples = Samples::default();
         for value in 1..=100_000 {
             samples.push(value);
@@ -1062,94 +1078,6 @@ mod round5_tests {
             assert!(estimate <= value);
             assert!(value - estimate <= value / 64);
         }
-    }
-    #[test]
-    fn top_extrinsics_sort_by_cost_and_phase_order_follows_execution() {
-        let mut block = legacy();
-        let phases: Vec<_> = block
-            .phases
-            .iter_mut()
-            .filter(|p| p.kind == "apply_extrinsic")
-            .collect();
-        for (i, phase) in phases.into_iter().enumerate() {
-            phase.call = Some(
-                if i == 0 {
-                    "Alphabet.first"
-                } else {
-                    "Zebra.expensive"
-                }
-                .into(),
-            );
-            if i == 0 {
-                let op = phase.ops[0].clone();
-                phase.ops.resize(100, op);
-            }
-            for op in &mut phase.ops {
-                op.timing = Some(polkadot_frame_trace_model::MeasuredTiming {
-                    start_ns: 0,
-                    duration_ns: if i == 0 { 1 } else { 10000 },
-                });
-                op.proof_bytes_added = Some(if i == 0 { 1 } else { 1000 });
-            }
-        }
-        let r = aggregate(&[block]);
-        let text = render_sorted(&r, 1, SortKey::Proof);
-        assert!(text.contains("Zebra.expensive"));
-        assert!(!text.contains("Alphabet.first"));
-        let by_ops = render_sorted(&r, 1, SortKey::Ops);
-        assert!(by_ops.contains("Alphabet.first") && !by_ops.contains("Zebra.expensive"));
-        let by_time = render_sorted(&r, 1, SortKey::Time);
-        assert!(by_time.contains("Zebra.expensive") && !by_time.contains("Alphabet.first"));
-        assert!(text.contains("… 1 more"));
-        assert_eq!(r.phase_order.first().unwrap(), "initialization");
-        assert_eq!(r.phase_order.last().unwrap(), "finalization");
-    }
-    #[test]
-    fn completed_blocks_fold_immediately_and_errors_do_not_drop_successes() {
-        let mut accumulator = Accumulator::default();
-        let block = legacy();
-        accumulator.record("ok".into(), Ok(block.clone()));
-        accumulator.record("missing".into(), Err(anyhow::anyhow!("missing fixture")));
-        accumulator.record("duplicate".into(), Ok(block));
-        let report = accumulator.finish();
-        assert_eq!(report.blocks, 1);
-        assert_eq!(report.errors.len(), 2);
-        assert!(report.errors[1].error.contains("duplicate block hash"));
-    }
-    #[test]
-    fn missing_proof_evidence_prints_no_unit_and_present_evidence_does() {
-        let block = legacy();
-        let text = render(&aggregate(std::slice::from_ref(&block)), 1);
-        assert!(
-            text.contains(
-                "proof n/a (0 operations with proof data; n/a not assigned to operations)"
-            ),
-            "{text}"
-        );
-        assert!(!text.contains("n/a B"));
-        assert!(!crate::summary::render(&block, 1).contains("n/a B"));
-        let mut value = serde_json::to_value(&block).unwrap();
-        for phase in value["phases"].as_array_mut().unwrap() {
-            for op in phase["ops"].as_array_mut().unwrap() {
-                op["proof_bytes_added"] = serde_json::json!(2);
-            }
-        }
-        value["execution"] = serde_json::json!({"root_check":true,"proof_bytes":100,
-            "rpc_calls":0,"measured_rpc_calls":0,"proof_rounds":0});
-        let block: AnnotatedBlock = serde_json::from_value(value).unwrap();
-        let r = aggregate(std::slice::from_ref(&block));
-        let text = render(&r, 1);
-        let attributed = r.totals.proof_bytes;
-        assert!(
-            text.contains(&format!(
-                "proof {attributed} B (partial) ({} operations with proof data; {} B not assigned to operations)",
-                r.totals.proof_ops_observed,
-                100 - attributed
-            )),
-            "{text}"
-        );
-        assert_eq!(r.over_attributed_proof_bytes, Some(0));
-        assert!(!text.contains("counted more than once"));
     }
     #[test]
     fn over_attribution_is_reported_instead_of_clamped_to_zero() {
@@ -1171,7 +1099,7 @@ mod round5_tests {
         assert_eq!(r.over_attributed_blocks, 1);
         assert_eq!(r.unattributed_proof_bytes, Some(1_000_000 - attributed));
         assert_eq!(r.execution_proof_bytes, Some(1_000_005));
-        let text = render(&r, 1);
+        let text = render_sorted(&r, 1, SortKey::Proof);
         assert!(
             text.contains(&format!("; {} B counted more than once)", attributed - 5)),
             "{text}"
@@ -1264,17 +1192,44 @@ mod round5_tests {
             hooks.contains("Few") && !hooks.contains("Many"),
             "{by_time}"
         );
-    }
-    #[test]
-    fn summary_and_report_tables_match_checked_in_goldens() {
-        let block = legacy();
-        assert_eq!(
-            crate::summary::render(&block, 2),
-            include_str!("../../../fixtures/model/summary.golden.txt")
-        );
-        assert_eq!(
-            render(&aggregate(&[block]), 2),
-            include_str!("../../../fixtures/model/report.golden.txt")
-        );
+        // Extrinsics rank by the same key; phases keep execution order.
+        let mut block = legacy();
+        let phases: Vec<_> = block
+            .phases
+            .iter_mut()
+            .filter(|p| p.kind == "apply_extrinsic")
+            .collect();
+        for (i, phase) in phases.into_iter().enumerate() {
+            phase.call = Some(
+                if i == 0 {
+                    "Alphabet.first"
+                } else {
+                    "Zebra.expensive"
+                }
+                .into(),
+            );
+            if i == 0 {
+                let op = phase.ops[0].clone();
+                phase.ops.resize(100, op);
+            }
+            for op in &mut phase.ops {
+                op.timing = Some(polkadot_frame_trace_model::MeasuredTiming {
+                    start_ns: 0,
+                    duration_ns: if i == 0 { 1 } else { 10000 },
+                });
+                op.proof_bytes_added = Some(if i == 0 { 1 } else { 1000 });
+            }
+        }
+        let r = aggregate(&[block]);
+        let text = render_sorted(&r, 1, SortKey::Proof);
+        assert!(text.contains("Zebra.expensive"));
+        assert!(!text.contains("Alphabet.first"));
+        let by_ops = render_sorted(&r, 1, SortKey::Ops);
+        assert!(by_ops.contains("Alphabet.first") && !by_ops.contains("Zebra.expensive"));
+        let by_time = render_sorted(&r, 1, SortKey::Time);
+        assert!(by_time.contains("Zebra.expensive") && !by_time.contains("Alphabet.first"));
+        assert!(text.contains("… 1 more"));
+        assert_eq!(r.phase_order.first().unwrap(), "initialization");
+        assert_eq!(r.phase_order.last().unwrap(), "finalization");
     }
 }

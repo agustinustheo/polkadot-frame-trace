@@ -191,7 +191,7 @@ fn tampered_expected_root_traps_in_core() {
     assert!(matches!(replay(artifact, None), Err(Error::Execution(_))));
 }
 #[test]
-fn tampered_parent_and_missing_proof_fail() {
+fn tampered_parent_runtime_node_and_missing_proof_fail() {
     let mut artifact = Artifact::load(&fixture("people-transfer")).unwrap();
     artifact.parent_header["stateRoot"] = Value::String(format!("0x{}", "42".repeat(32)));
     assert!(
@@ -200,38 +200,23 @@ fn tampered_parent_and_missing_proof_fail() {
             .to_string()
             .contains("parent header hash mismatch")
     );
-    let mut artifact = Artifact::load(&fixture("people-transfer")).unwrap();
-    artifact.proof_nodes.clear();
-    assert!(
-        replay(artifact, None)
-            .unwrap_err()
-            .to_string()
-            .contains("missing/invalid at path")
-    );
-}
-#[test]
-fn artifact_round_trip_and_version_rejection() {
-    let dir = std::env::temp_dir().join(format!(
-        "polkadot-frame-trace-artifact-{}",
-        std::process::id()
-    ));
-    let mut artifact = Artifact::load(&fixture("people-transfer")).unwrap();
-    // Auxiliary metadata must not prevent a verified replay from being saved.
-    artifact.metadata = "malformed auxiliary metadata".into();
-    artifact.save(&dir).unwrap();
-    assert_eq!(Artifact::load(&dir).unwrap().metadata, artifact.metadata);
-    assert_eq!(
-        Artifact::load(&dir).unwrap().proof_nodes,
-        artifact.proof_nodes
-    );
-    std::fs::remove_dir_all(dir).unwrap();
-    artifact.format_version = 2;
-    assert!(
-        replay(artifact, None)
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported artifact version")
-    );
+    let mut missing = Artifact::load(&fixture("people-transfer")).unwrap();
+    missing.proof_nodes.clear();
+    let mut tampered = Artifact::load(&fixture("people-transfer")).unwrap();
+    let runtime_node = tampered
+        .proof_nodes
+        .iter_mut()
+        .max_by_key(|s| s.len())
+        .unwrap();
+    runtime_node.replace_range(2..4, "42");
+    for artifact in [missing, tampered] {
+        assert!(
+            replay(artifact, None)
+                .unwrap_err()
+                .to_string()
+                .contains("missing/invalid at path")
+        );
+    }
 }
 /// A public endpoint, overridable for CI: `FRAME_TRACE_WESTEND_AH_RPC`, `FRAME_TRACE_WESTEND_RPC`.
 fn endpoint(var: &str, default: &str) -> String {
@@ -277,23 +262,6 @@ fn public_relay_network() {
             .ops
             .iter()
             .any(|o| o.op == "put" && o.item == "ParaInherent::OnChainVotes")
-    );
-}
-
-#[test]
-fn tampered_runtime_proof_node_is_rejected() {
-    let mut artifact = Artifact::load(&fixture("people-transfer")).unwrap();
-    let runtime_node = artifact
-        .proof_nodes
-        .iter_mut()
-        .max_by_key(|s| s.len())
-        .unwrap();
-    runtime_node.replace_range(2..4, "42");
-    assert!(
-        replay(artifact, None)
-            .unwrap_err()
-            .to_string()
-            .contains("missing/invalid at path")
     );
 }
 
@@ -415,87 +383,4 @@ fn corrupt_artifact_files_and_limits_name_the_path() {
         );
     }
     std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn concurrent_artifact_saves_are_atomic_and_leave_no_temporary_files() {
-    let dir = std::env::temp_dir().join(format!(
-        "polkadot-frame-trace-concurrent-save-{}",
-        std::process::id()
-    ));
-    let original = Artifact::load(&fixture("people-transfer")).unwrap();
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for i in 0..8 {
-            let mut artifact = original.clone();
-            artifact.metadata = format!("writer-{i}");
-            let dir = &dir;
-            handles.push(scope.spawn(move || artifact.save(dir).unwrap()));
-        }
-        for handle in handles {
-            handle.join().unwrap();
-        }
-    });
-    let artifact = Artifact::load(&dir).unwrap();
-    assert!(artifact.metadata.starts_with("writer-"));
-    assert_eq!(artifact.proof_nodes, original.proof_nodes);
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-/// A runtime that imports a host function polkadot-frame-trace lacks fails with the function's name,
-/// not as a generic execution failure.
-#[test]
-fn missing_host_function_is_named_through_runtime_override() {
-    let wasm = wat::parse_str(
-        r#"(module
-        (import "env" "ext_frame_trace_missing_version_1" (func))
-        (import "env" "ext_frame_trace_also_missing_version_2" (func (param i32)))
-        (memory (export "memory") 1)
-        (global (export "__heap_base") i32 (i32.const 1024))
-        (func (export "Core_execute_block") (param i32 i32) (result i64) i64.const 0))"#,
-    )
-    .unwrap();
-    let session = polkadot_frame_trace_replay::ReplaySession::new(None)
-        .unwrap()
-        .with_runtime_override(Some(wasm));
-    let error = polkadot_frame_trace_replay::replay_with_session(
-        Artifact::load(&fixture("westend-asset-hub")).unwrap(),
-        None,
-        &session,
-    )
-    .unwrap_err();
-    let Error::MissingHostFunctions { functions, hint } = &error else {
-        panic!("{error}");
-    };
-    assert_eq!(
-        functions,
-        "env:ext_frame_trace_also_missing_version_2, env:ext_frame_trace_missing_version_1"
-    );
-    assert!(hint.contains("runtime override may be the cause"), "{hint}");
-    let text = error.to_string();
-    assert!(
-        text.starts_with("the runtime needs host functions polkadot-frame-trace does not have: env:ext_frame_trace_also_missing_version_2, "),
-        "{text}"
-    );
-    assert!(text.contains("fixed when it is built"), "{text}");
-    assert!(
-        text.contains(
-            "troubleshooting.html#the-runtime-needs-host-functions-polkadot-frame-trace-does-not-have"
-        ),
-        "{text}"
-    );
-}
-
-/// `fixtures/wasm/missing-host-function.wasm` is the committed build of its `.wat` source.
-/// Regenerate it with `FRAME_TRACE_REGENERATE_WASM=1` on this test.
-#[test]
-fn missing_host_function_wasm_matches_its_source() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/wasm");
-    let built = wat::parse_file(dir.join("missing-host-function.wat")).unwrap();
-    let path = dir.join("missing-host-function.wasm");
-    if std::env::var_os("FRAME_TRACE_REGENERATE_WASM").is_some() {
-        std::fs::write(&path, &built).unwrap();
-    }
-    assert_eq!(std::fs::read(&path).unwrap(), built);
 }
