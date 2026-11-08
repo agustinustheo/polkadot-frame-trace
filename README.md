@@ -5,8 +5,6 @@
   </picture>
 </p>
 
-<h1 align="center">polkadot-frame-trace</h1>
-
 <p align="center">
   <b>Replay any Polkadot SDK block on your machine and see every storage read and write as a trace.</b>
 </p>
@@ -31,7 +29,7 @@
 
 ---
 
-polkadot-frame-trace replays a block on your machine with the chain's own runtime, using state from any node's normal RPC.
+`polkadot-frame-trace` replays a block on your machine with the chain's own runtime, using state from any node's normal RPC.
 It records every storage read and write and checks that the replay reached the block's state root.
 It exports the result as an OpenTelemetry trace for Jaeger or Grafana Tempo, or as JSON.
 

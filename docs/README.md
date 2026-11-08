@@ -3,8 +3,6 @@
   <img src="images/logo-light.png" alt="polkadot-frame-trace logo: the Polkadot mark and wordmark with trace timeline bars" width="320">
 </picture>
 
-# polkadot-frame-trace
-
 Replay any block of a Polkadot SDK chain on your machine and see every storage read and write as a trace.
 
 ![A Utility.batch block in Jaeger with numbered callouts](images/hero.png)
