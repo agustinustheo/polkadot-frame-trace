@@ -321,9 +321,14 @@ fn block_writes_json() {
 
 #[test]
 fn rpc_source_reports_connection_failure() {
-    let out = run(&["block", "--rpc", "ws://127.0.0.1:1", "--block", "1"]);
+    let url = "ws://alice9:secret@127.0.0.1:1/path?apikey=k3y";
+    let out = run(&["block", "--rpc", url, "--block", "1"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("connect ws://127.0.0.1:1"));
+    assert!(stderr.contains("connect ws://127.0.0.1:1:"), "{stderr}");
+    for hidden in ["alice9", "secret", "apikey", "k3y", "/path"] {
+        assert!(!stderr.contains(hidden), "{stderr}");
+    }
 }
 
 #[test]
@@ -441,15 +446,18 @@ fn block_fails_when_the_collector_rejects_spans() {
     );
 }
 
+/// A one-shot OTLP/HTTP receiver that waits `secs` for a request, answers with `body` and
+/// returns the request body.
 fn otlp_response(
     content_type: &'static str,
     body: Vec<u8>,
-) -> (String, std::thread::JoinHandle<()>) {
+    secs: u64,
+) -> (String, std::thread::JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
         let mut stream = loop {
             match listener.accept() {
                 Ok((stream, _)) => break stream,
@@ -480,9 +488,11 @@ fn otlp_response(
             }
         }
         assert!(length > 0);
-        reader.read_exact(&mut vec![0; length]).unwrap();
+        let mut request = vec![0; length];
+        reader.read_exact(&mut request).unwrap();
         write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).unwrap();
         stream.write_all(&body).unwrap();
+        request
     });
     (url, server)
 }
@@ -494,6 +504,7 @@ fn block_fails_on_protobuf_partial_success_without_printing_exported() {
     let (url, server) = otlp_response(
         "application/x-protobuf",
         b"\x0a\x09\x08\x07\x12\x05quota".to_vec(),
+        10,
     );
     let out = run(&[
         "block",
@@ -517,7 +528,7 @@ fn block_fails_on_json_partial_success_with_string_or_numeric_counts() {
     for count in [r#""7""#, "7"] {
         let body =
             format!(r#"{{"partialSuccess":{{"rejectedSpans":{count},"errorMessage":"quota"}}}}"#);
-        let (url, server) = otlp_response("application/json; charset=utf-8", body.into_bytes());
+        let (url, server) = otlp_response("application/json; charset=utf-8", body.into_bytes(), 10);
         let out = run(&[
             "block",
             "--from-file",
@@ -547,7 +558,7 @@ fn block_exports_on_normal_success_and_zero_rejections() {
             br#"{"partialSuccess":{"rejectedSpans":"0","errorMessage":"warning"}}"#.to_vec(),
         ),
     ] {
-        let (url, server) = otlp_response(content_type, body);
+        let (url, server) = otlp_response(content_type, body, 10);
         let out = run(&[
             "block",
             "--from-file",
@@ -563,6 +574,116 @@ fn block_exports_on_normal_success_and_zero_rejections() {
             "{stderr}"
         );
     }
+}
+
+#[test]
+fn offline_block_sends_the_service_name_and_every_attribute_the_dashboards_query() {
+    use opentelemetry_proto::tonic::{
+        collector::trace::v1::ExportTraceServiceRequest,
+        common::v1::{KeyValue, any_value::Value},
+    };
+    use prost::Message;
+    let _serial = REPLAY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // The replay compiles its runtime first, which takes a while in a debug build.
+    let (url, server) = otlp_response("application/x-protobuf", Vec::new(), 120);
+    let with_user = url.replace("http://", "http://alice9:secret@");
+    let out = run(&[
+        "block",
+        "--offline",
+        &fixture("replay/people-transfer"),
+        "--otlp",
+        &with_user,
+    ]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains(&format!("spans to {url}\n")), "{stderr}");
+    assert!(
+        !format!("{stdout}{stderr}").contains("alice9"),
+        "{stdout}{stderr}"
+    );
+    assert!(
+        !format!("{stdout}{stderr}").contains("secret"),
+        "{stdout}{stderr}"
+    );
+    let request = ExportTraceServiceRequest::decode(server.join().unwrap().as_slice()).unwrap();
+    let value = |attributes: &[KeyValue], key: &str| {
+        let found = attributes.iter().find(|a| a.key == key)?;
+        found.value.clone()?.value
+    };
+    let text = |v: &str| Some(Value::StringValue(v.into()));
+    let [resource] = &request.resource_spans[..] else {
+        panic!("{request:?}")
+    };
+    let resource = &resource.resource.as_ref().unwrap().attributes;
+    assert_eq!(
+        value(resource, "service.name"),
+        text("polkadot-frame-trace")
+    );
+    let spans: Vec<_> = request.resource_spans[0]
+        .scope_spans
+        .iter()
+        .flat_map(|s| &s.spans)
+        .collect();
+    // The block panels select the root span by name and read its counts as numbers.
+    let [root] = &spans
+        .iter()
+        .filter(|s| s.parent_span_id.is_empty())
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("not one root span")
+    };
+    assert!(root.name.starts_with("block #2 "), "{}", root.name);
+    assert_eq!(
+        value(&root.attributes, "frame.block.number"),
+        Some(Value::IntValue(2))
+    );
+    for key in [
+        "frame.block.extrinsics",
+        "frame.storage.ops",
+        "frame.storage.reads",
+        "frame.storage.writes",
+        "frame.storage.duplicate_reads",
+    ] {
+        let found = value(&root.attributes, key);
+        assert!(
+            matches!(found, Some(Value::IntValue(_))),
+            "{key}: {found:?}"
+        );
+    }
+    assert!(spans.iter().any(|s| {
+        value(&s.attributes, "frame.phase") == text("extrinsic")
+            && value(&s.attributes, "frame.extrinsic.call") == text("Balances.transfer_keep_alive")
+    }));
+    // Storage panels filter and group on these, with these types.
+    let ops: Vec<_> = spans
+        .iter()
+        .filter(|s| value(&s.attributes, "db.system.name") == text("substrate"))
+        .collect();
+    assert!(!ops.is_empty());
+    for op in &ops {
+        for key in [
+            "db.operation.name",
+            "db.collection.name",
+            "frame.storage.item",
+            "frame.storage.origin",
+        ] {
+            let found = value(&op.attributes, key);
+            assert!(
+                matches!(found, Some(Value::StringValue(_))),
+                "{key}: {found:?}"
+            );
+        }
+        let found = value(&op.attributes, "frame.storage.duplicate_read");
+        assert!(matches!(found, Some(Value::BoolValue(_))), "{found:?}");
+    }
+    // A read new to the proof, with its bytes and its decoded map key.
+    assert!(ops.iter().any(|s| {
+        value(&s.attributes, "frame.storage.item") == text("System::Account")
+            && value(&s.attributes, "frame.storage.origin") == text("trie (new)")
+            && matches!(value(&s.attributes, "frame.storage.proof_bytes"), Some(Value::IntValue(n)) if n > 0)
+            && matches!(value(&s.attributes, "frame.storage.map_keys"), Some(Value::ArrayValue(a)) if !a.values.is_empty())
+    }));
 }
 
 #[test]
@@ -679,6 +800,35 @@ fn offline_block_reports_root_and_writes_measured_named_json() {
             .any(|p| p["call"] == "Balances.transfer_keep_alive")
     );
     assert!(block["phases"][0]["ops"][0]["timing"].is_object());
+}
+
+#[test]
+fn offline_block_with_a_wrong_header_state_root_fails_the_root_check() {
+    let _serial = REPLAY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut artifact = polkadot_frame_trace_replay::Artifact::load(std::path::Path::new(&fixture(
+        "replay/people-transfer",
+    )))
+    .unwrap();
+    artifact.block["header"]["stateRoot"] = format!("0x{}", "42".repeat(32)).into();
+    // A matching block hash, so the replay gets past the header check to the root check.
+    artifact.block_hash = polkadot_frame_trace_replay::header_hash(&artifact.block["header"])
+        .unwrap()
+        .parse()
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!(
+        "polkadot-frame-trace-wrong-root-{}",
+        std::process::id()
+    ));
+    artifact.save(&dir).unwrap();
+    let out = run(&["block", "--offline", dir.to_str().unwrap()]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("root check: NOT VERIFIED"), "{stderr}");
+    assert!(
+        stderr.contains("runtime execution failed (root mismatch"),
+        "{stderr}"
+    );
 }
 
 struct MockNode {
@@ -1342,6 +1492,107 @@ fn follow_exits_1_when_its_stderr_is_closed() {
             .unwrap(),
     );
     assert_eq!(exit_code_within(&mut child, 15), Some(1));
+}
+
+#[test]
+fn endpoint_credentials_never_reach_the_output_but_the_host_and_port_do() {
+    // Nobody listens on port 1. 192.0.2.1 is a documentation address: plain and remote.
+    let secret =
+        |scheme: &str, host: &str| format!("{scheme}://alice9:secret@{host}/path?apikey=k3y");
+    // A space in the path makes the OTLP exporter reject the URL and quote it.
+    let unparsable = "http://alice9:secret@127.0.0.1:1/a path?apikey=k3y";
+    let check = |text: &str, shown: &str| {
+        for hidden in ["alice9", "secret", "apikey", "k3y", "/path", "a path"] {
+            assert!(!text.contains(hidden), "{hidden} leaked: {text}");
+        }
+        assert!(text.contains(shown), "{shown} missing: {text}");
+    };
+    let trace = fixture("model/real/people-paseo-block-1-trace-state.json");
+    for (args, shown) in [
+        (
+            [
+                "--rpc",
+                secret("http", "127.0.0.1:1").as_str(),
+                "--block",
+                "1",
+            ],
+            "chain_getBlockHash: http://127.0.0.1:1: ",
+        ),
+        // Gives up after the 1 s deadline, having warned that the node is not encrypted.
+        (
+            [
+                "--rpc",
+                secret("ws", "192.0.2.1:9944").as_str(),
+                "--block=1",
+                "--rpc-timeout=1",
+            ],
+            "warning: --rpc ws://192.0.2.1:9944 is not",
+        ),
+        (
+            [
+                "--from-file",
+                trace.as_str(),
+                "--otlp",
+                &secret("http", "127.0.0.1:1"),
+            ],
+            "exporting to http://127.0.0.1:1: ",
+        ),
+        (
+            ["--from-file", trace.as_str(), "--otlp", unparsable],
+            "invalid endpoint 'http://127.0.0.1:1'",
+        ),
+    ] {
+        let out = run(&[&["block"][..], &args].concat());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        check(&String::from_utf8_lossy(&out.stdout), "");
+        check(&stderr, shown);
+    }
+    // `follow` keeps polling an unreachable node, and warns about a remote plain collector.
+    for scheme in ["ws", "http"] {
+        let log = std::env::temp_dir().join(format!(
+            "polkadot-frame-trace-secrets-{}.log",
+            std::process::id()
+        ));
+        std::fs::File::create(&log).unwrap();
+        let append = || std::fs::File::options().append(true).open(&log).unwrap();
+        let mut child = Child(
+            Command::new(BIN)
+                .args(["follow", "--rpc", &secret(scheme, "127.0.0.1:1")])
+                .args(["--otlp", &secret("http", "192.0.2.1:4318")])
+                .stdout(append())
+                .stderr(append())
+                .spawn()
+                .unwrap(),
+        );
+        wait_for_log(&log, "follow poll failed", 30);
+        stop_child(&mut child.0, "-TERM");
+        let text = std::fs::read_to_string(&log).unwrap();
+        std::fs::remove_file(log).unwrap();
+        check(
+            &text,
+            "follow poll failed: RPC error: chain_getFinalizedHead: ",
+        );
+        check(&text, &format!("{scheme}://127.0.0.1:1: "));
+        check(
+            &text,
+            "warning: --otlp http://192.0.2.1:4318 is not encrypted",
+        );
+    }
+    // A bad --otlp URL stops `follow` at startup.
+    let out = run(&[
+        "follow",
+        "--rpc",
+        &secret("ws", "127.0.0.1:1"),
+        "--otlp",
+        unparsable,
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    check(&String::from_utf8_lossy(&out.stdout), "");
+    check(
+        &String::from_utf8_lossy(&out.stderr),
+        "--otlp: cannot build OTLP exporter",
+    );
 }
 
 #[test]
