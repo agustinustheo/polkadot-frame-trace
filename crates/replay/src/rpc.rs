@@ -336,7 +336,11 @@ impl Rpc {
                 .await
                 .map_err(|e| {
                     let transient = e.is_timeout() || e.is_connect() || e.is_request();
-                    (with_sources(&e.without_url()), transient)
+                    let shown = endpoint(&self.inner.url);
+                    (
+                        format!("{shown}: {}", with_sources(&e.without_url())),
+                        transient,
+                    )
                 })?;
             let status = response.status();
             if !status.is_success() {
