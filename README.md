@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/agustinustheo/polkadot-frame-trace/main/docs/images/logo.svg" alt="polkadot-frame-trace logo: pink petals in front of trace timeline bars" width="160">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/agustinustheo/polkadot-frame-trace/main/docs/images/logo-dark.png">
+    <img src="https://raw.githubusercontent.com/agustinustheo/polkadot-frame-trace/main/docs/images/logo-light.png" alt="polkadot-frame-trace logo: the Polkadot mark and wordmark with trace timeline bars" width="420">
+  </picture>
 </p>
 
 <h1 align="center">polkadot-frame-trace</h1>
