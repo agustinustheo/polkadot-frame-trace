@@ -1,4 +1,7 @@
-<img src="images/logo.svg" alt="polkadot-frame-trace logo: pink petals in front of trace timeline bars" width="112">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/logo-dark.png">
+  <img src="images/logo-light.png" alt="polkadot-frame-trace logo: the Polkadot mark and wordmark with trace timeline bars" width="320">
+</picture>
 
 # polkadot-frame-trace
 
