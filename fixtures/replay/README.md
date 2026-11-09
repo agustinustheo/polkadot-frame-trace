@@ -1,6 +1,6 @@
 # Offline replay fixtures
 
-Saved blocks and runtime API calls in the [version 1 artifact format](../../crates/replay/ARTIFACT.md). Tests replay them with no network. Block replays check the state root; runtime API calls check their results.
+Saved blocks and runtime API calls in the [version 1 artifact format](../../docs/reference/saved-block-format.md). Tests replay them with no network. Block replays check the state root; runtime API calls check their results.
 
 `blobify.py` moves proof nodes of 100,000 bytes or more, such as runtimes, into shared blobs under `blobs/<blake2-256>.zst`. Older fixtures may keep large nodes inside the artifact. An artifact refers to them as `blob:<hash>`. The loader limits decompression and checks each blob's hash. `Artifact::save` always writes a self-contained artifact.
 
@@ -33,7 +33,7 @@ Tests also change the root, drop nodes and change parent headers, and check that
 The People call runs on the parent state of `people-transfer`, not on block #2's result. Its recorded result is a local run, not node data. Regenerate it offline:
 
 ```sh
-cargo +1.93.0 run -p polkadot-frame-trace-replay --example record_calls
+cargo +1.93.0 run --example record_calls
 ```
 
 The Westend calls were recorded on 2026-10-25 with `--check-state-call`. The local result matched the node's `state_call` for both. The nonce call returns `0x08020000` (nonce 520) and reads one `System::Account`.

@@ -10,16 +10,16 @@ polkadot-frame-trace has two release channels, like Rust's stable and nightly:
 Both build the same four targets with the same packaging, in `.github/workflows/build.yml`.
 `release.yml` and `nightly.yml` call it, so the two cannot drift.
 
-Stable releases also publish the five crates to crates.io. Nightly builds and pre-releases do not.
+Stable releases also publish the single `polkadot-frame-trace` crate to crates.io. Nightly builds and pre-releases do not.
 Users install a release binary, a nightly binary, or build from Git; see `docs/getting-started/install.md`.
 
 ## Stable releases
 
 A pushed `v*` tag runs `.github/workflows/release.yml`.
 It checks that the tag matches the `polkadot-frame-trace` version in `Cargo.toml`, runs rustfmt, clippy and the tests, builds the binaries and creates a **draft** GitHub release.
-Then it publishes the crates to crates.io, so the crates are public before you publish the draft.
+Then it publishes the crate to crates.io, so it is public before you publish the draft.
 
-1. Set the new version in `[workspace.package]` in `Cargo.toml`, and in the `version` of the four `polkadot-frame-trace-*` entries in `[workspace.dependencies]`. Then run `cargo build` so `Cargo.lock` follows.
+1. Set the new version in `[package]` in `Cargo.toml`. Then run `cargo build` so `Cargo.lock` follows.
 2. In `CHANGELOG.md`, rename `## [X.Y.Z] - Unreleased` to `## [X.Y.Z] - YYYY-MM-DD` and check the entries. The release notes are this section. The workflow fails while the heading still says `Unreleased` or the date is not a calendar date.
 3. Commit, and merge to `main`.
 4. Tag the merged commit and push the tag:
@@ -33,22 +33,21 @@ Then it publishes the crates to crates.io, so the crates are public before you p
 
 ### crates.io
 
-After the draft release is created, the `crates` job of the Release workflow publishes the workspace with `cargo publish --workspace --locked`.
-Cargo publishes the crates in dependency order: `polkadot-frame-trace-model`, `-decode`, `-replay`, `-otel`, then `polkadot-frame-trace`.
+After the draft release is created, the `crates` job of the Release workflow publishes the package with `cargo publish --locked`.
 It uses the crates.io API token in the repository secret `CARGO_REGISTRY_TOKEN`.
 
 - It runs only for versions without a suffix. `0.2.0-rc.1` gets a draft pre-release and nothing on crates.io.
 - It runs only for a tag push to `agustinustheo/polkadot-frame-trace`. A run started by hand with **Run workflow**, or in a fork, publishes nothing. To publish after a failure, re-run the tag's run.
-- It asks crates.io for each crate's version first and leaves out the ones already there. A re-run after a partial failure publishes the rest.
+- It asks crates.io for the package version first and skips publishing if it is already there.
 - crates.io versions are permanent. A wrong one can only be yanked, so the job runs on a tag that passed the checks and built.
 
-The packages hold the sources, `Cargo.toml`, `LICENSE`, the README for `polkadot-frame-trace` and `ARTIFACT.md` for `polkadot-frame-trace-replay`.
-They leave out `tests/`, `examples/`, `fixtures/` and `dev/`: the tests need the fixtures, which stay in the repository.
+The package holds `src/`, `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE` and `CHANGELOG.md`.
+It leaves out `tests/`, `examples/`, `fixtures/` and `dev/`: the tests need the fixtures, which stay in the repository.
 Check a change to the packaging with:
 
 ```sh
-cargo +1.93.0 package --workspace --locked --no-verify --list
-cargo +1.93.0 publish --workspace --dry-run --locked
+cargo +1.93.0 package --locked --no-verify --list
+cargo +1.93.0 publish --dry-run --locked
 ```
 
 ### What the release contains
@@ -102,15 +101,15 @@ Each job has only the permissions it needs: `contents: read` to test and build, 
 
 ## Polkadot SDK upgrades
 
-The replay crate pins most Polkadot SDK crates (`sc-executor`, `sp-io`, `sp-runtime`, `sp-trie` and the others in `crates/replay/Cargo.toml`) with `=` to the versions of one stable release, today `polkadot-stable2609`.
-Two use caret ranges: `sp-panic-handler = "13.0.2"` in `crates/replay/Cargo.toml`, a patch newer than the 13.0.0 in stable2609, and `sp-crypto-hashing`, workspace `"0.1.0"` in `Cargo.toml`. They change rarely.
+The package pins most Polkadot SDK crates (`sc-executor`, `sp-io`, `sp-runtime`, `sp-trie` and the others in `Cargo.toml`) with `=` to the versions of one stable release, today `polkadot-stable2609`.
+Two use caret ranges: `sp-panic-handler = "13.0.2"` in `Cargo.toml`, a patch newer than the 13.0.0 in stable2609, and `sp-crypto-hashing`, `"0.1.0"` in `Cargo.toml`. They change rarely.
 Dependabot groups the Polkadot SDK crates in one pull request. Move the pinned crates together, to one stable release.
 
 Then run the offline tests and the live tests (see [Live tests](README.md#live-tests)):
 
 ```sh
-cargo +1.93.0 test --workspace --locked
-cargo +1.93.0 test --workspace --locked -- --ignored
+cargo +1.93.0 test --locked
+cargo +1.93.0 test --locked -- --ignored
 ```
 
 The saved blocks in `fixtures/replay/` are chain data, so an upgrade does not change them.
@@ -124,6 +123,6 @@ Then update every place that names the release or the crate versions:
 - `docs/troubleshooting.md`, the missing host functions section;
 - `docs/guides/see-runtime-calls.md`, the crate versions the `with-tracing` feature was checked against;
 - `dev/README.md`, the release in **Add host functions for a chain**;
-- `crates/replay/src/lib.rs`, the comment on `HostFunctions`;
-- `crates/replay/ARTIFACT.md`, the release and the SDK source links;
+- `src/replay/mod.rs`, the comment on `HostFunctions`;
+- `docs/reference/saved-block-format.md`, the release and the SDK source links;
 - `fixtures/replay/README.md`, the host crates the fixtures run with.

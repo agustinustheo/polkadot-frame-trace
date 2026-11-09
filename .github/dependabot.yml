@@ -10,7 +10,7 @@ updates:
     schedule:
       interval: weekly
     groups:
-      # Polkadot SDK crates. The replay crate pins the executor and host-function
+      # Polkadot SDK crates. The package pins the executor and host-function
       # crates with `=`; they must move together, to one stable release.
       polkadot-sdk:
         patterns:
@@ -23,7 +23,6 @@ updates:
           # Released on their own, not with the Polkadot SDK stable releases.
           - "frame-metadata"
           - "frame-decode"
-          - "polkadot-frame-trace*"
       opentelemetry:
         patterns:
           - "opentelemetry*"

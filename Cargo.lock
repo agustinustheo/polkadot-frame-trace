@@ -3493,83 +3493,29 @@ name = "polkadot-frame-trace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bs58",
  "clap",
  "comfy-table",
  "ctrlc",
- "opentelemetry-proto",
- "polkadot-frame-trace-decode",
- "polkadot-frame-trace-model",
- "polkadot-frame-trace-otel",
- "polkadot-frame-trace-replay",
- "prost",
- "rayon",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "polkadot-frame-trace-decode"
-version = "0.1.0"
-dependencies = [
- "bs58",
- "frame-decode",
- "frame-metadata",
- "hex",
- "parity-scale-codec",
- "polkadot-frame-trace-model",
- "scale-info",
- "scale-value",
- "serde",
- "serde_json",
- "sp-crypto-hashing",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "polkadot-frame-trace-model"
-version = "0.1.0"
-dependencies = [
- "hex",
- "parity-scale-codec",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "polkadot-frame-trace-otel"
-version = "0.1.0"
-dependencies = [
- "opentelemetry",
- "opentelemetry-proto",
- "opentelemetry_sdk",
- "percent-encoding",
- "polkadot-frame-trace-decode",
- "polkadot-frame-trace-model",
- "polkadot-frame-trace-replay",
- "prost",
- "reqwest",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "polkadot-frame-trace-replay"
-version = "0.1.0"
-dependencies = [
  "cumulus-primitives-proof-size-hostfunction",
+ "frame-decode",
  "frame-metadata",
  "hash-db",
  "hex",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
  "parity-scale-codec",
  "parking_lot",
- "polkadot-frame-trace-decode",
- "polkadot-frame-trace-model",
+ "percent-encoding",
+ "prost",
  "rayon",
  "reqwest",
  "rustix",
  "sc-executor",
  "sc-executor-common",
+ "scale-info",
+ "scale-value",
  "schnellru",
  "serde",
  "serde_json",

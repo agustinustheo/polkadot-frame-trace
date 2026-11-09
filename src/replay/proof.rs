@@ -1,0 +1,571 @@
+//! Demand-paged content-addressed nodes. SDK trie traversal authenticates all returned nodes.
+use crate::replay::session::ReplaySession;
+use crate::replay::{
+    Error, Result,
+    rpc::{Rpc, hex0, unhex},
+};
+use hash_db::Prefix;
+use parking_lot::Mutex;
+use serde_json::json;
+use sp_core::{Blake2Hasher, H256, storage::ChildInfo};
+use sp_state_machine::TrieBackendStorage;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
+
+/// Distinct proof nodes, and their bytes, one replay may hold. Real blocks of Westend, Polkadot,
+/// Kusama and their Asset Hubs held at most 3,656 nodes (a Polkadot relay block) and 5.6 MB
+/// (a Westend Asset Hub runtime upgrade, with both runtimes).
+pub(crate) const MAX_REPLAY_NODES: usize = 1_000_000;
+pub(crate) const MAX_REPLAY_NODE_BYTES: usize = 256 * 1024 * 1024;
+
+thread_local! {
+    static KEY_HINT: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+    static CHILD: std::cell::RefCell<Option<ChildInfo>> = const { std::cell::RefCell::new(None) };
+}
+pub(crate) fn with_key_hint<T>(key: &[u8], f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Vec<u8>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            KEY_HINT.with(|h| h.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(KEY_HINT.with(|h| h.replace(Some(key.to_vec()))));
+    f()
+}
+pub(crate) fn with_child<T>(child: &ChildInfo, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<ChildInfo>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CHILD.with(|h| h.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(CHILD.with(|h| h.replace(Some(child.clone()))));
+    f()
+}
+
+type PendingKey = (Option<Vec<u8>>, Vec<u8>);
+
+#[derive(Clone)]
+pub(crate) struct ProofDb {
+    rpc: Option<Rpc>,
+    parent: H256,
+    session: ReplaySession,
+    nodes: Arc<Mutex<BTreeMap<H256, Arc<[u8]>>>>,
+    used: Arc<Mutex<BTreeSet<H256>>>,
+    bootstrap: Arc<Mutex<BTreeSet<H256>>>,
+    families: Arc<BTreeSet<(Vec<u8>, Concat)>>,
+    // Serialize misses and recheck the cache after acquiring this gate. Concurrent requests for
+    // the same node share the first result. Complete-key hints batch the entire lookup path.
+    fetch_gate: Arc<Mutex<()>>,
+    pub(crate) online: Arc<AtomicBool>,
+    pub(crate) speculative: Arc<AtomicBool>,
+    pending: Arc<Mutex<BTreeMap<PendingKey, Option<ChildInfo>>>>,
+    observed: Arc<Mutex<BTreeSet<Vec<u8>>>>,
+    root: Arc<Mutex<Option<H256>>>,
+    rpc_failure: Arc<Mutex<Option<Error>>>,
+    pub(crate) failure: Arc<Mutex<Option<String>>>,
+    pub(crate) round_trips: Arc<AtomicUsize>,
+    /// Bytes of the distinct nodes in `nodes`, changed only under its lock, in [`Self::admit`].
+    held_bytes: Arc<AtomicUsize>,
+}
+impl ProofDb {
+    #[cfg(test)]
+    pub(crate) fn new(rpc: Option<Rpc>, parent: H256) -> Self {
+        Self::with_session(rpc, parent, ReplaySession::new())
+    }
+    pub(crate) fn with_session(rpc: Option<Rpc>, parent: H256, session: ReplaySession) -> Self {
+        let online = rpc.is_some();
+        let families = Arc::new(families(&session.predicted_keys()));
+        Self {
+            rpc,
+            parent,
+            session,
+            nodes: Default::default(),
+            used: Default::default(),
+            bootstrap: Default::default(),
+            families,
+            fetch_gate: Default::default(),
+            online: Arc::new(AtomicBool::new(online)),
+            speculative: Default::default(),
+            pending: Default::default(),
+            observed: Default::default(),
+            root: Default::default(),
+            rpc_failure: Default::default(),
+            failure: Default::default(),
+            round_trips: Default::default(),
+            held_bytes: Default::default(),
+        }
+    }
+    pub(crate) fn rpc(&self) -> Option<&Rpc> {
+        self.rpc.as_ref()
+    }
+    pub(crate) fn mark_bootstrap(&self) {
+        *self.bootstrap.lock() = self.used.lock().clone();
+    }
+    pub(crate) fn begin_measured(&self) {
+        *self.used.lock() = self.bootstrap.lock().clone();
+    }
+    pub(crate) fn set_root(&self, root: H256) {
+        *self.root.lock() = Some(root);
+    }
+    pub(crate) fn take_error(&self, fallback: String) -> Error {
+        self.rpc_failure
+            .lock()
+            .take()
+            .unwrap_or(Error::Invalid(fallback))
+    }
+    /// Walk only authenticated cache nodes from this block's parent root. This probe cannot
+    /// fetch, record failures, or use speculative placeholders. Prefetched nodes are exported
+    /// only if execution subsequently reads them.
+    fn covered(&self, child: Option<&ChildInfo>, key: &[u8]) -> bool {
+        use sp_state_machine::Backend;
+        struct Cached<'a>(&'a ProofDb);
+        impl TrieBackendStorage<Blake2Hasher> for Cached<'_> {
+            fn get(&self, hash: &H256, _: Prefix) -> std::result::Result<Option<Vec<u8>>, String> {
+                self.0.cached(hash)
+            }
+        }
+        let Some(root) = *self.root.lock() else {
+            return false;
+        };
+        let backend = sp_state_machine::TrieBackendBuilder::new(Cached(self), root).build();
+        match child {
+            Some(child) => backend.child_storage(child, key).is_ok(),
+            None => backend.storage(key).is_ok(),
+        }
+    }
+    pub(crate) fn fetch(&self, child: Option<&ChildInfo>, paths: &[Vec<u8>]) -> Result<()> {
+        self.fetch_inner(child, paths, true)
+    }
+    fn fetch_inner(
+        &self,
+        child: Option<&ChildInfo>,
+        paths: &[Vec<u8>],
+        count_round: bool,
+    ) -> Result<()> {
+        if !self.online.load(Ordering::SeqCst) {
+            return Err(Error::Invalid("offline proof cache miss".into()));
+        }
+        let rpc = self
+            .rpc
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("offline proof cache miss".into()))?;
+        let keys: Vec<_> = paths
+            .iter()
+            .filter(|key| !self.covered(child, key))
+            .map(|k| hex0(k))
+            .collect();
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if count_round {
+            self.round_trips.fetch_add(1, Ordering::Relaxed);
+        }
+        let proof = match child {
+            Some(child) => rpc.call(
+                "state_getChildReadProof",
+                json!([
+                    hex0(child.prefixed_storage_key().as_slice()),
+                    keys,
+                    self.parent
+                ]),
+            )?,
+            None => rpc.call("state_getReadProof", json!([keys, self.parent]))?,
+        };
+        if proof["at"] != json!(self.parent) {
+            return Err(Error::Invalid(
+                "read proof returned a different parent hash".into(),
+            ));
+        }
+        let nodes = proof["proof"]
+            .as_array()
+            .ok_or_else(|| Error::Invalid("proof nodes are not an array".into()))?;
+        self.admit_nodes(
+            nodes
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .ok_or_else(|| Error::Invalid("non-string proof node".into()))
+                        .and_then(unhex)
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn insert_nodes(&self, fetched: impl IntoIterator<Item = Vec<u8>>) {
+        self.admit_nodes(fetched).expect("within the replay limits");
+    }
+    /// Adds nodes from the node or a saved replay, and shares them with the
+    /// session's memory cache. Fails at the first node past the replay limits.
+    pub(crate) fn admit_nodes(&self, fetched: impl IntoIterator<Item = Vec<u8>>) -> Result<()> {
+        let fetched: Vec<_> = fetched
+            .into_iter()
+            .map(|bytes| (H256::from(sp_io::hashing::blake2_256(&bytes)), bytes))
+            .collect();
+        let mut nodes = self.nodes.lock();
+        let mut shared = self.session.nodes.lock();
+        for (hash, bytes) in fetched {
+            let len = bytes.len();
+            // Keep one immutable allocation per content hash across active replays.
+            self.admit(&mut nodes, hash, len, || shared.intern(hash, bytes))?;
+        }
+        Ok(())
+    }
+    /// The one way a distinct node enters this replay, from any source. The limits are checked
+    /// before it is added, under the lock of `nodes`, which also guards `held_bytes`.
+    fn admit(
+        &self,
+        nodes: &mut BTreeMap<H256, Arc<[u8]>>,
+        hash: H256,
+        len: usize,
+        node: impl FnOnce() -> Arc<[u8]>,
+    ) -> Result<()> {
+        let count = nodes.len() + 1;
+        let std::collections::btree_map::Entry::Vacant(entry) = nodes.entry(hash) else {
+            node();
+            return Ok(());
+        };
+        let bytes = self.held_bytes.load(Ordering::Relaxed) + len;
+        if count > MAX_REPLAY_NODES || bytes > MAX_REPLAY_NODE_BYTES {
+            return Err(Error::Invalid(format!(
+                "this block needs more than {MAX_REPLAY_NODES} proof nodes or \
+                 {MAX_REPLAY_NODE_BYTES} bytes of them, the limit per replay"
+            )));
+        }
+        entry.insert(node());
+        self.held_bytes.store(bytes, Ordering::Relaxed);
+        Ok(())
+    }
+    /// Keeps `error` as the replay's error, and returns its text for the trie.
+    fn fail_with(&self, error: Error) -> String {
+        let text = error.to_string();
+        *self.rpc_failure.lock() = Some(error);
+        text
+    }
+    fn cached(&self, hash: &H256) -> std::result::Result<Option<Vec<u8>>, String> {
+        if let Some(node) = self.nodes.lock().get(hash).cloned() {
+            return Ok(Some(node.to_vec()));
+        }
+        // Offline artifacts must stand alone; a warm online session must not mask truncation.
+        if self.rpc.is_none() {
+            return Ok(None);
+        }
+        let cached = self.session.nodes.lock().get(hash);
+        if let Some(node) = cached {
+            self.admit(&mut self.nodes.lock(), *hash, node.len(), || node.clone())
+                .map_err(|e| self.fail_with(e))?;
+            return Ok(Some(node.to_vec()));
+        }
+        Ok(None)
+    }
+    pub(crate) fn remember_key(&self, key: &[u8]) {
+        if self.rpc.is_some() && key != b":code" && CHILD.with(|c| c.borrow().is_none()) {
+            let mut hints = self.observed.lock();
+            if hints.len() < 4096 {
+                hints.insert(key.to_vec());
+            }
+        }
+    }
+    /// Predictable full keys/storage prefixes are acquired in batches, on the shared request
+    /// threads. Each group of batches is one round.
+    pub(crate) fn prefetch(&self, keys: &[Vec<u8>]) -> Result<()> {
+        let Some(rpc) = &self.rpc else {
+            return keys
+                .chunks(32)
+                .try_for_each(|keys| self.fetch_inner(None, keys, false));
+        };
+        let batches: Vec<_> = keys.chunks(32).collect();
+        for group in batches.chunks(rpc.parallelism()) {
+            let before = rpc.count();
+            rpc.run_all(
+                group
+                    .iter()
+                    .map(|keys| || self.fetch_inner(None, keys, false)),
+            )?;
+            if rpc.count() > before {
+                self.round_trips.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn acquire_pending(&self) -> Result<bool> {
+        let pending = std::mem::take(&mut *self.pending.lock());
+        if pending.is_empty() {
+            return Ok(false);
+        }
+        let mut top = Vec::new();
+        for ((_, path), child) in pending {
+            if let Some(child) = child {
+                self.fetch(Some(&child), &[path])?;
+            } else {
+                self.remember_key(&path);
+                top.push(path);
+            }
+        }
+        self.prefetch(&top)?;
+        Ok(true)
+    }
+    pub(crate) fn speculative_value<T>(
+        &self,
+        value: std::result::Result<Option<T>, String>,
+    ) -> std::result::Result<Option<T>, String> {
+        if self.speculative.load(Ordering::SeqCst) {
+            Ok(value.unwrap_or(None))
+        } else {
+            value
+        }
+    }
+    pub(crate) fn remember_paths(&self) {
+        if self.rpc.is_some() {
+            self.session.remember_paths(self.observed.lock().clone());
+        }
+    }
+    pub(crate) fn retain_nodes(&self, nodes: &[Vec<u8>]) -> Result<()> {
+        self.admit_nodes(nodes.iter().cloned())?;
+        self.used.lock().extend(
+            nodes
+                .iter()
+                .map(|n| H256::from(sp_io::hashing::blake2_256(n))),
+        );
+        Ok(())
+    }
+    pub(crate) fn export(&self) -> Vec<String> {
+        let used = self.used.lock();
+        self.nodes
+            .lock()
+            .iter()
+            .filter(|(hash, _)| used.contains(hash))
+            .map(|(_, v)| hex0(v))
+            .collect()
+    }
+}
+impl TrieBackendStorage<Blake2Hasher> for ProofDb {
+    fn get(&self, hash: &H256, prefix: Prefix) -> std::result::Result<Option<Vec<u8>>, String> {
+        if let Some(node) = self.cached(hash).inspect_err(|e| {
+            *self.failure.lock() = Some(e.clone());
+        })? {
+            self.used.lock().insert(*hash);
+            return Ok(Some(node));
+        }
+        let _gate = self.fetch_gate.lock();
+        if let Some(node) = self.cached(hash).inspect_err(|e| {
+            *self.failure.lock() = Some(e.clone());
+        })? {
+            self.used.lock().insert(*hash);
+            return Ok(Some(node));
+        }
+        let result = (|| {
+            let child = CHILD.with(|c| c.borrow().clone());
+            let bytes = match &child {
+                Some(c) => prefix
+                    .0
+                    .strip_prefix(c.keyspace())
+                    .ok_or_else(|| "child node lacks SDK keyspace prefix".to_owned())?,
+                None => prefix.0,
+            };
+            let mut path = bytes.to_vec();
+            if let Some(nibble) = prefix.1 {
+                path.push(nibble);
+            }
+            let mut full_key_hint = false;
+            KEY_HINT.with(|h| {
+                if let Some(key) = &*h.borrow()
+                    // On warm blocks fetch only the missing branch of :code. Requesting the
+                    // full key would download the unchanged multi-megabyte Wasm again.
+                    && (key != b":code" || bytes == key.as_slice() || self.session.nodes.lock().is_empty())
+                    && key.starts_with(bytes)
+                    && prefix
+                        .1
+                        .is_none_or(|n| key.get(bytes.len()).is_some_and(|b| b & 0xf0 == n))
+                {
+                    path = key.clone();
+                    full_key_hint = true;
+                }
+            });
+            // Root calculation and iteration ask for branch prefixes, rather than full keys.
+            // Query each immediate child in the same proof: root collapse commonly needs a
+            // neighboring node next. These are hints only; every get still checks its hash.
+            let mut paths = if !full_key_hint && self.session.speculative_discovery {
+                sibling_paths(&path, prefix.1.is_some())
+            } else {
+                vec![path.clone()]
+            };
+            if child.is_none() && full_key_hint {
+                paths.extend(related_keys(&paths, &self.families));
+            }
+            if self.speculative.load(Ordering::SeqCst) {
+                // Missing values are placeholders in throw-away executions only. Their output
+                // and root are never accepted; the final two runs use strict authentication.
+                let mut pending = self.pending.lock();
+                for path in &paths {
+                    pending.insert(
+                        (child.as_ref().map(|c| c.keyspace().to_vec()), path.clone()),
+                        child.clone(),
+                    );
+                }
+                return Err(format!(
+                    "speculative proof node {hash:?} at {}",
+                    hex0(&path)
+                ));
+            }
+            if !self.online.load(Ordering::SeqCst) {
+                return Err(format!(
+                    "proof node {hash:?} missing/invalid at path {}",
+                    hex0(&path)
+                ));
+            }
+            if child.is_none() {
+                for path in &paths {
+                    self.remember_key(path);
+                }
+            }
+            self.fetch(child.as_ref(), &paths).map_err(|e| {
+                let message = format!("proof fetch for {hash:?} at {}: {e}", hex0(&path));
+                *self.rpc_failure.lock() = Some(e);
+                message
+            })?;
+            self.cached(hash)?.map(Some).ok_or_else(|| {
+                format!(
+                    "proof did not contain {hash:?} at {}; missing/invalid proof node",
+                    hex0(&path)
+                )
+            })
+        })();
+        if let Err(e) = &result
+            && !self.speculative.load(Ordering::SeqCst)
+        {
+            *self.failure.lock() = Some(e.clone());
+        }
+        if matches!(&result, Ok(Some(_))) {
+            self.used.lock().insert(*hash);
+        }
+        result
+    }
+}
+
+/// Prefix bytes are padded with zero in the low nibble when the SDK supplies an odd prefix.
+pub(crate) fn sibling_paths(path: &[u8], odd: bool) -> Vec<Vec<u8>> {
+    let mut paths = vec![path.to_vec()];
+    for nibble in 0..16 {
+        let mut sibling = path.to_vec();
+        if odd {
+            if let Some(last) = sibling.last_mut() {
+                *last = (nibble << 4) | (*last & 0x0f);
+            }
+        } else {
+            sibling.push(nibble << 4);
+        }
+        if sibling != path {
+            paths.push(sibling);
+        }
+    }
+    paths
+}
+
+/// Learned single-map concat layouts let a newly encountered 32-byte identifier predict
+/// related reads (e.g. a linked-list node followed by account/ledger lookups). These are
+/// bandwidth-only guesses: every used value still traverses the current authenticated root.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Concat {
+    Blake,
+    Twox,
+}
+fn split(key: &[u8]) -> Option<(Concat, &[u8])> {
+    if key.len() == 80 && key[32..48] == sp_crypto_hashing::blake2_128(&key[48..]) {
+        Some((Concat::Blake, &key[48..]))
+    } else if key.len() == 72 && key[32..40] == sp_crypto_hashing::twox_64(&key[40..]) {
+        Some((Concat::Twox, &key[40..]))
+    } else {
+        None
+    }
+}
+fn families(known: &BTreeSet<Vec<u8>>) -> BTreeSet<(Vec<u8>, Concat)> {
+    known
+        .iter()
+        .filter_map(|key| split(key).map(|(hasher, _)| (key[..32].to_vec(), hasher)))
+        .take(256)
+        .collect()
+}
+fn related_keys(keys: &[Vec<u8>], families: &BTreeSet<(Vec<u8>, Concat)>) -> Vec<Vec<u8>> {
+    let mut hints = BTreeSet::new();
+    for key in keys {
+        let Some((_, value)) = split(key) else {
+            continue;
+        };
+        for (prefix, hasher) in families {
+            let mut predicted = prefix.clone();
+            match hasher {
+                Concat::Blake => predicted.extend(sp_crypto_hashing::blake2_128(value)),
+                Concat::Twox => predicted.extend(sp_crypto_hashing::twox_64(value)),
+            }
+            predicted.extend(value);
+            if !keys.contains(&predicted) {
+                hints.insert(predicted);
+            }
+            if hints.len() >= 31 {
+                return hints.into_iter().collect();
+            }
+        }
+    }
+    hints.into_iter().collect()
+}
+
+#[cfg(test)]
+mod prediction_tests {
+    use super::*;
+    #[test]
+    fn predictions_keep_three_replays_at_most_4096_paths_and_31_related_keys() {
+        let session = ReplaySession::new();
+        session.remember_paths([b"old".to_vec()].into());
+        for i in 0..3 {
+            session.remember_paths([vec![i]].into());
+        }
+        assert!(!session.predicted_keys().contains(b"old".as_slice()));
+        session.remember_paths((0..5000u16).map(|i| i.to_be_bytes().to_vec()).collect());
+        assert_eq!(session.predicted_keys().len(), 4096);
+        let key = |prefix: u8, id: u8| {
+            let mut key = vec![prefix; 32];
+            key.extend(sp_crypto_hashing::blake2_128(&[id; 32]));
+            key.extend([id; 32]);
+            key
+        };
+        let many = (0..64).map(|prefix| key(prefix, 7)).collect();
+        assert_eq!(related_keys(&[key(1, 9)], &families(&many)).len(), 31);
+    }
+    #[test]
+    fn active_blocks_share_immutable_nodes_without_sharing_offline_coverage() {
+        let session = ReplaySession::new();
+        let rpc = Rpc::new("ws://127.0.0.1:1").expect("lazy RPC");
+        let first = ProofDb::with_session(Some(rpc.clone()), H256::repeat_byte(1), session.clone());
+        let second = ProofDb::with_session(Some(rpc), H256::repeat_byte(2), session.clone());
+        let bytes = vec![7; 1024];
+        let hash = H256::from(sp_io::hashing::blake2_256(&bytes));
+        first.insert_nodes([bytes.clone()]);
+        // A memory cache hit counts towards this replay's limits, and is refused past them.
+        second
+            .held_bytes
+            .store(MAX_REPLAY_NODE_BYTES, Ordering::Relaxed);
+        assert!(second.cached(&hash).is_err());
+        assert!(second.nodes.lock().is_empty());
+        second.held_bytes.store(0, Ordering::Relaxed);
+        assert_eq!(second.cached(&hash).expect("cached"), Some(bytes.clone()));
+        assert_eq!(second.held_bytes.load(Ordering::Relaxed), bytes.len());
+        second.insert_nodes([bytes]);
+        assert_eq!(second.held_bytes.load(Ordering::Relaxed), 1024);
+        assert!(Arc::ptr_eq(
+            &first.nodes.lock()[&hash],
+            &second.nodes.lock()[&hash]
+        ));
+        assert!(Arc::ptr_eq(
+            &first.nodes.lock()[&hash],
+            session.nodes.lock().peek(&hash).expect("shared")
+        ));
+        let offline = ProofDb::with_session(None, H256::repeat_byte(1), session);
+        assert!(offline.cached(&hash).expect("offline").is_none());
+    }
+}

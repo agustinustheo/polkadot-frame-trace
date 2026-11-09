@@ -71,7 +71,7 @@ jobs:
           if [ -n "$BUILD_VERSION" ]; then
             export FRAME_TRACE_BUILD_VERSION="$BUILD_VERSION"
           fi
-          cargo +1.93.0 build --release --locked -p polkadot-frame-trace --target "$TARGET"
+          cargo +1.93.0 build --release --locked --target "$TARGET"
 
       - name: Check the binary runs
         run: |

@@ -123,19 +123,19 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Run clippy
-        run: cargo +1.93.0 clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo +1.93.0 clippy --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: cargo +1.93.0 test --workspace --locked
+        run: cargo +1.93.0 test --locked
 
       # The three live ignored tests replay public blocks; the runtime upgrade test reads
       # archive state; it took 4 minutes in a local debug build. Endpoints: dev/README.md#live-tests.
       - name: Run ignored public-network tests
         timeout-minutes: 20
-        run: cargo +1.93.0 test --workspace --locked -- --ignored
+        run: cargo +1.93.0 test --locked -- --ignored
 
       - name: Build release binary
-        run: cargo +1.93.0 build --release --locked -p polkadot-frame-trace
+        run: cargo +1.93.0 build --release --locked
 
       - name: Trace the latest finalized block
         run: |

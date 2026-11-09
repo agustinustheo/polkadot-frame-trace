@@ -57,7 +57,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Run clippy
-        run: cargo +1.93.0 clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo +1.93.0 clippy --all-targets --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -86,4 +86,4 @@ jobs:
       # Offline: the tests use loopback mock nodes. Public-network tests are
       # marked #[ignore] and run in the nightly workflow.
       - name: Run tests
-        run: cargo +1.93.0 test --workspace --locked
+        run: cargo +1.93.0 test --locked

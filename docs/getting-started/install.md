@@ -105,13 +105,13 @@ Or clone the repository, which has the saved blocks the next step replays.
 ```sh
 git clone https://github.com/agustinustheo/polkadot-frame-trace
 cd polkadot-frame-trace
-cargo install --locked --path crates/cli
+cargo install --locked --path .
 ```
 
 ```text
 Cloning into 'polkadot-frame-trace'...
 ...
-   Installed package `polkadot-frame-trace v0.1.0 (.../polkadot-frame-trace/crates/cli)` (executable `polkadot-frame-trace`)
+   Installed package `polkadot-frame-trace v0.1.0 (.../polkadot-frame-trace)` (executable `polkadot-frame-trace`)
 ```
 
 Cargo puts the binary in `~/.cargo/bin`.

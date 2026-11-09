@@ -10,12 +10,12 @@ Material for people working on polkadot-frame-trace itself. User documentation i
 | [`RELEASING.md`](RELEASING.md) | How to cut a release: version bump, changelog, tag, draft release. |
 | [`performance.md`](performance.md) | Current numbers: follow throughput, the memory limit, and how to reproduce them. |
 
-The replay artifact format is specified in [`crates/replay/ARTIFACT.md`](../crates/replay/ARTIFACT.md). Fixture provenance is in [`fixtures/replay/README.md`](../fixtures/replay/README.md).
+The replay artifact format is specified in [`docs/reference/saved-block-format.md`](../docs/reference/saved-block-format.md). Fixture provenance is in [`fixtures/replay/README.md`](../fixtures/replay/README.md).
 
 ## Add host functions for a chain
 
 polkadot-frame-trace executes every runtime with one fixed set of host functions: the `HostFunctions`
-tuple in [`crates/replay/src/lib.rs`](../crates/replay/src/lib.rs). It matches a stable2609
+tuple in [`src/replay/mod.rs`](../src/replay/mod.rs). It matches a stable2609
 omni-node: `sp_io::SubstrateHostFunctions`, storage proof size, statement store and the
 RFC-163 elliptic curve functions. Executors disallow missing imports.
 A runtime that imports anything else fails before it runs.
@@ -25,10 +25,10 @@ To support such a chain:
 
 1. Find the crate that defines the functions. A `#[runtime_interface]` module exports a
    `HostFunctions` type; the names in the error are `ext_<interface>_<function>_version_<n>`.
-2. Add the crate to `crates/replay/Cargo.toml` and update `Cargo.lock` (builds use
+2. Add the crate to `Cargo.toml` and update `Cargo.lock` (builds use
    `--locked`). Most SDK crates there are pinned with `=` to one SDK release; pin the new one
    the same way, to the version from that release. Two are not pinned exactly:
-   `sp-panic-handler = "13.0.2"` and `sp-crypto-hashing` (workspace `"0.1.0"`) use caret
+   `sp-panic-handler = "13.0.2"` and `sp-crypto-hashing` (`"0.1.0"`) use caret
    ranges. See [`RELEASING.md`](RELEASING.md#polkadot-sdk-upgrades) for SDK upgrades.
 3. Append its `HostFunctions` type to the tuple.
 4. Replay a real block of that chain with `polkadot-frame-trace block --rpc <url> --block <n>` and
@@ -44,7 +44,7 @@ error path.
 ## Live tests
 
 Tests that need a public node are `#[ignore]`d. Run them with
-`cargo +1.93.0 test --workspace --locked -- --ignored`. Each reads its endpoint from an
+`cargo +1.93.0 test --locked -- --ignored`. Each reads its endpoint from an
 environment variable and falls back to the public endpoint:
 
 | Variable | Default | Tests |
