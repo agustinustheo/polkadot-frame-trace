@@ -26,7 +26,7 @@ The project is named polkadot-frame-trace: the command, the crates, the OTLP ser
 - A runtime that needs host functions polkadot-frame-trace does not have fails with an error that names them.
 - Nightly builds of `main` for the same four systems as releases, in the `Nightly` pre-release on GitHub. `polkadot-frame-trace --version` shows the date and commit they were built from.
 - Tested on relay chains and on blocks that upgrade the runtime, see [What polkadot-frame-trace supports](https://agustinustheodorus.com/polkadot-frame-trace/reference/support.html).
-- Limits against a node that sends too much: 64 MiB per RPC response and 16 MiB per WebSocket frame. One block may use 1,000,000 pieces of state or 256 MiB.
+- Limits against a node that sends too much: 64 MiB per RPC response. One block may use 1,000,000 pieces of state or 256 MiB.
 - A replay deadline: `follow` exits 1 when a replay runs the runtime for 10 minutes, so a supervisor restarts it. Other commands warn once.
 - A warning when `--rpc` or `--otlp` is plain `ws://` or `http://` to another machine.
 - URL redaction: output and errors show `--rpc` and `--otlp` URLs as scheme, host and port only, so credentials and API keys stay out of logs. Error text from the node or the OTLP receiver is cut to 512 characters.

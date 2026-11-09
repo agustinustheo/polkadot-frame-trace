@@ -1,6 +1,5 @@
 //! A small safe-RPC boundary, with cancellable deadlines, pooled connections and retries.
 use crate::{Error, Result};
-use futures_util::{SinkExt, StreamExt};
 use polkadot_frame_trace_model::redact::{endpoint, untrusted};
 use serde_json::{Value, json};
 use std::{
@@ -10,11 +9,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{runtime::Runtime, sync::Mutex};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream,
-    tungstenite::{Message, protocol::WebSocketConfig},
-};
+use tokio::runtime::Runtime;
 pub use tokio_util::sync::CancellationToken;
 
 const ALLOWED: &[&str] = &[
@@ -28,7 +23,6 @@ const ALLOWED: &[&str] = &[
     "state_getMetadata",
     "state_call",
 ];
-type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[derive(Clone)]
 pub struct Rpc {
@@ -47,9 +41,7 @@ impl Default for Activity {
 struct Inner {
     url: String,
     http: reqwest::Client,
-    tls: Arc<rustls::ClientConfig>,
-    sockets: Vec<Mutex<Option<Socket>>>,
-    next: AtomicUsize,
+    parallelism: usize,
     limit: tokio::sync::Semaphore,
     cancel: CancellationToken,
     deadline: Duration,
@@ -58,13 +50,9 @@ struct Inner {
     pool: OnceLock<std::result::Result<rayon::ThreadPool, String>>,
 }
 
-/// Largest RPC response read, over HTTP or WebSocket. The largest real one is the proof of
+/// Largest RPC response read. The largest real one is the proof of
 /// `:code`, about 5.5 MB as hex JSON.
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
-/// Largest WebSocket frame. A response can come in one frame, and tungstenite reserves a
-/// frame's declared length before its data arrives, so this stays well below the response
-/// limit: about three times the largest real response.
-pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 fn runtime() -> Result<&'static Runtime> {
     static RUNTIME: OnceLock<std::result::Result<Runtime, String>> = OnceLock::new();
     RUNTIME
@@ -79,7 +67,7 @@ fn runtime() -> Result<&'static Runtime> {
         .map_err(|e| Error::Rpc(e.clone()))
 }
 impl Rpc {
-    /// Lazy connections. DNS, TCP, TLS and WS handshake share a ten-second connect deadline;
+    /// Lazy connections. DNS, TCP and TLS share a ten-second connect deadline;
     /// the logical call (including retries) has a two-minute deadline after a slot is acquired,
     /// and each of its four attempts a quarter of that. Public nodes can take 20 s or more to
     /// prove `:code`.
@@ -105,27 +93,22 @@ impl Rpc {
                 "proof parallelism must be between 1 and 64".into(),
             ));
         }
-        let roots =
-            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::aws_lc_rs::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|e| Error::Rpc(e.to_string()))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+        let url = if let Some(rest) = url.strip_prefix("wss://") {
+            format!("https://{rest}")
+        } else if let Some(rest) = url.strip_prefix("ws://") {
+            format!("http://{rest}")
+        } else {
+            url.to_owned()
+        };
         let http = reqwest::Client::builder()
-            .tls_backend_preconfigured(tls.clone())
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| Error::Rpc(e.to_string()))?;
         Ok(Self {
             inner: Arc::new(Inner {
-                url: url.into(),
+                url,
                 http,
-                tls: Arc::new(tls),
-                sockets: (0..parallelism).map(|_| Mutex::new(None)).collect(),
-                next: AtomicUsize::new(0),
+                parallelism,
                 limit: tokio::sync::Semaphore::new(parallelism),
                 cancel,
                 deadline,
@@ -150,7 +133,7 @@ impl Rpc {
         (running == 0).then(|| last.elapsed())
     }
     pub fn parallelism(&self) -> usize {
-        self.inner.sockets.len()
+        self.inner.parallelism
     }
     /// Runs `jobs` at once on the shared request threads and returns their results in order.
     /// A job that panics returns an error. The request limit still applies to every call.
@@ -247,7 +230,7 @@ impl Rpc {
             // A quarter of the call's deadline, so four attempts fit. A slow node needs a longer
             // deadline, not more attempts: a large proof can take tens of seconds to arrive.
             let attempt_deadline = self.inner.deadline / 4;
-            let response = tokio::time::timeout(attempt_deadline, self.once(&request, id))
+            let response = tokio::time::timeout(attempt_deadline, self.once(&request))
                 .await
                 .unwrap_or_else(|_| Err(("attempt deadline exceeded".into(), true)));
             match response {
@@ -317,124 +300,42 @@ impl Rpc {
         ))
         .await;
     }
-    async fn once(&self, request: &Value, id: usize) -> std::result::Result<Value, (String, bool)> {
-        if self.inner.url.starts_with("http") {
-            let response = self
-                .inner
-                .http
-                .post(&self.inner.url)
-                .json(request)
-                .send()
-                .await
-                .map_err(|e| {
-                    let transient = e.is_timeout() || e.is_connect() || e.is_request();
-                    let shown = endpoint(&self.inner.url);
-                    (
-                        format!("{shown}: {}", with_sources(&e.without_url())),
-                        transient,
-                    )
-                })?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err((
-                    format!("HTTP {status}"),
-                    status.as_u16() == 429 || status.is_server_error(),
-                ));
-            }
-            let mut response = response;
-            let mut body = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|e| (with_sources(&e.without_url()), true))?
-            {
-                if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                    return Err((too_large(), false));
-                }
-                body.extend_from_slice(&chunk);
-            }
-            return serde_json::from_slice(&body)
-                .map_err(|e| (format!("malformed response: {e}"), false));
-        }
-        let index = self.inner.next.fetch_add(1, Ordering::Relaxed) % self.parallelism();
-        let mut slot = match self
+    async fn once(&self, request: &Value) -> std::result::Result<Value, (String, bool)> {
+        let response = self
             .inner
-            .sockets
-            .iter()
-            .find_map(|slot| slot.try_lock().ok())
-        {
-            Some(slot) => slot,
-            None => self.inner.sockets[index].lock().await,
-        };
-        // Take ownership: dropping a timed-out/cancelled future closes the socket, so its
-        // outstanding response can never be consumed by the next call.
-        let mut socket = match slot.take() {
-            Some(socket) => socket,
-            None => {
-                tokio::time::timeout(
-                    Duration::from_secs(10),
-                    tokio_tungstenite::connect_async_tls_with_config(
-                        self.inner.url.as_str(),
-                        Some(
-                            WebSocketConfig::default()
-                                .max_message_size(Some(MAX_RESPONSE_BYTES))
-                                .max_frame_size(Some(MAX_FRAME_BYTES)),
-                        ),
-                        true,
-                        Some(tokio_tungstenite::Connector::Rustls(self.inner.tls.clone())),
-                    ),
-                )
-                .await
-                .map_err(|_| {
-                    (
-                        format!(
-                            "connect {}: TCP/TLS/WebSocket handshake deadline exceeded",
-                            endpoint(&self.inner.url)
-                        ),
-                        true,
-                    )
-                })?
-                .map_err(|e| (format!("connect {}: {e}", endpoint(&self.inner.url)), true))?
-                .0
-            }
-        };
-        socket
-            .send(Message::Text(request.to_string().into()))
+            .http
+            .post(&self.inner.url)
+            .json(request)
+            .send()
             .await
-            .map_err(|e| (e.to_string(), true))?;
-        while let Some(message) = socket.next().await {
-            let message = match message {
-                Err(tokio_tungstenite::tungstenite::Error::Capacity(e)) => {
-                    return Err((format!("response too large: {e}"), false));
-                }
-                message => message.map_err(|e| (e.to_string(), true))?,
-            };
-            match message {
-                Message::Text(text) => {
-                    let value: Value = serde_json::from_str(&text)
-                        .map_err(|e| (format!("malformed response: {e}"), false))?;
-                    // A frame for another ID (a stray notification or a buggy node) is skipped,
-                    // so it cannot fail this call or leave our answer queued for the next one.
-                    // An error with a null ID answers the one request on this socket: the node
-                    // could not read it.
-                    if value
-                        .get("id")
-                        .is_some_and(|got| *got != id && !null_id_error(&value))
-                        || value.get("id").is_none() && value.get("method").is_some()
-                    {
-                        continue;
-                    }
-                    *slot = Some(socket);
-                    return Ok(value);
-                }
-                Message::Ping(_) | Message::Pong(_) => {
-                    socket.flush().await.map_err(|e| (e.to_string(), true))?;
-                }
-                Message::Close(_) => return Err(("connection closed".into(), true)),
-                _ => return Err(("unexpected WebSocket message".into(), false)),
-            }
+            .map_err(|e| {
+                let transient = e.is_timeout() || e.is_connect() || e.is_request();
+                let shown = endpoint(&self.inner.url);
+                (
+                    format!("{shown}: {}", with_sources(&e.without_url())),
+                    transient,
+                )
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err((
+                format!("HTTP {status}"),
+                status.as_u16() == 429 || status.is_server_error(),
+            ));
         }
-        Err(("connection dropped".into(), true))
+        let mut response = response;
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| (with_sources(&e.without_url()), true))?
+        {
+            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err((too_large(), false));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&body).map_err(|e| (format!("malformed response: {e}"), false))
     }
     pub fn count(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
@@ -685,58 +586,6 @@ mod tests {
         assert!(error.is_transient(), "{error}");
         assert!(error.to_string().contains("got the header of"), "{error}");
         assert_eq!(rpc.finalized_header().unwrap(), announced);
-        worker.join().unwrap();
-    }
-    #[test]
-    fn websocket_frames_for_other_ids_are_skipped_and_the_socket_stays_in_step() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("ws://{}", listener.local_addr().unwrap());
-        let worker = thread::spawn(move || {
-            let mut socket = tungstenite::accept(listener.accept().unwrap().0).unwrap();
-            for result in [1, 2] {
-                let request: Value =
-                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-                for frame in [
-                    json!({"jsonrpc":"2.0", "id":9999, "result":"stray"}),
-                    json!({"jsonrpc":"2.0", "method":"note", "params":{}}),
-                    json!({"jsonrpc":"2.0", "id":request["id"], "result":result}),
-                ] {
-                    socket
-                        .send(tungstenite::Message::Text(frame.to_string().into()))
-                        .unwrap();
-                }
-            }
-        });
-        let rpc = Rpc::new(&url).unwrap();
-        assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), 1);
-        // The same socket is reused; no frame from the first call is left behind.
-        assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), 2);
-        assert_eq!(rpc.count(), 2);
-        worker.join().unwrap();
-    }
-    #[test]
-    fn dropped_websocket_connection_reconnects() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("ws://{}", listener.local_addr().unwrap());
-        let worker = thread::spawn(move || {
-            for success in [false, true] {
-                let mut socket = tungstenite::accept(listener.accept().unwrap().0).unwrap();
-                let request: Value =
-                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-                if success {
-                    socket
-                        .send(tungstenite::Message::Text(
-                            json!({"jsonrpc":"2.0", "id":request["id"], "result":7})
-                                .to_string()
-                                .into(),
-                        ))
-                        .unwrap();
-                }
-            }
-        });
-        let rpc = Rpc::new(&url).unwrap();
-        assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), 7);
-        assert_eq!(rpc.count(), 2);
         worker.join().unwrap();
     }
 }

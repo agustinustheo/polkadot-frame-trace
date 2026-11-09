@@ -371,41 +371,6 @@ fn shared_nodes_are_reauthenticated_at_each_blocks_root() {
 }
 
 #[test]
-fn stalled_websocket_handshake_has_deadline_and_can_be_cancelled() {
-    use std::time::{Duration, Instant};
-    for cancelled in [false, true] {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("ws://{}", listener.local_addr().unwrap());
-        let token = rpc::CancellationToken::new();
-        let rpc = Rpc::with_options(&url, 1, Duration::from_secs(4), token.clone()).unwrap();
-        let (ready, connected) = std::sync::mpsc::channel();
-        let node = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            ready.send(()).unwrap();
-            stream.set_nonblocking(false).unwrap();
-            let mut buffer = Vec::new();
-            let _ = stream.read_to_end(&mut buffer); // client dropping the cancelled future closes it
-        });
-        let cancellation = thread::spawn(move || {
-            connected.recv_timeout(Duration::from_secs(15)).unwrap();
-            if cancelled {
-                token.cancel();
-            }
-        });
-        let start = Instant::now();
-        let error = rpc.call("chain_getHeader", json!([])).unwrap_err();
-        if cancelled {
-            assert!(matches!(error, Error::Cancelled), "{error}");
-        } else {
-            assert!(error.is_transient(), "{error}");
-        }
-        assert!(start.elapsed() < Duration::from_secs(20));
-        cancellation.join().unwrap();
-        node.join().unwrap();
-    }
-}
-
-#[test]
 fn warm_session_fetches_changed_external_runtime_code_at_its_full_key() {
     fn trie(
         code: u8,

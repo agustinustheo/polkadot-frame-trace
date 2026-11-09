@@ -15,7 +15,7 @@ This page lists the chains, nodes and runtimes polkadot-frame-trace can replay.
 
 | Requirement | Supported |
 | --- | --- |
-| URL | `ws://`, `wss://`, `http://` or `https://`. |
+| URL | `http://` or `https://`. `ws://` and `wss://` use HTTP and HTTPS on the same host, port and path. |
 | RPC methods | Only the safe methods below. No unsafe RPC and no special node build. |
 | State | The node must still have the parent state of the block. For old blocks, use an [archive node](glossary.md#archive-node). |
 

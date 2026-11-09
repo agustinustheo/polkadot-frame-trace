@@ -17,12 +17,8 @@ publish = true
 thiserror.workspace = true
 polkadot-frame-trace-model.workspace = true
 zstd = "0.13.4"
-tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 tokio-util = "0.7"
-futures-util = { version = "0.3", features = ["sink"] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
-webpki-roots = "1"
 sp-panic-handler = "13.0.2"
 frame-metadata.workspace = true
 sp-crypto-hashing.workspace = true
@@ -56,6 +52,5 @@ rustix = { version = "1.1.5", default-features = false, features = ["std", "proc
 workspace = true
 
 [dev-dependencies]
-tungstenite = "0.30"
 wat = "1"
 polkadot-frame-trace-decode.workspace = true
