@@ -3,8 +3,7 @@
 //! Each node is charged an upper estimate of what it costs the process: its allocation with the
 //! `Arc` header, rounded up past the size classes of the macOS, glibc and musl allocators, plus
 //! the hash table that indexes it, estimated the same way. When a new node would exceed the
-//! budget, the least recently used nodes go first, one at a time. The disk cache, when there is
-//! one, still has them.
+//! budget, the least recently used nodes go first, one at a time.
 use schnellru::{Limiter, LruMap};
 use sp_core::H256;
 use std::sync::Arc;

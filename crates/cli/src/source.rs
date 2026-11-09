@@ -40,12 +40,6 @@ pub struct SourceArgs {
     /// Longest wait in seconds for one RPC response; each request gets four tries.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = rpc_timeout, requires = "rpc", conflicts_with_all = ["from_json", "offline"])]
     pub rpc_timeout: Duration,
-    /// Persistent authenticated proof nodes and compiled Wasm cache directory.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["from_json"])]
-    pub cache_dir: Option<PathBuf>,
-    /// Disk cache limit in bytes; runtime code in use is kept.
-    #[arg(long, default_value_t = 1073741824, conflicts_with_all = ["from_json"])]
-    pub cache_max_bytes: u64,
     /// Execute this Wasm instead of the authenticated :code, for example the same runtime
     /// built with `with-tracing`. Bypasses the code-hash check. Labelled on stderr, in JSON
     /// and in OTLP. Warns when its runtime version differs from the chain's. Cannot be
@@ -187,11 +181,8 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
                 polkadot_frame_trace_replay::replay_with_session(
                     artifact,
                     None,
-                    &polkadot_frame_trace_replay::ReplaySession::with_cache_max_bytes(
-                        args.cache_dir.as_deref(),
-                        args.cache_max_bytes,
-                    )?
-                    .with_runtime_override(runtime_override),
+                    &polkadot_frame_trace_replay::ReplaySession::new()?
+                        .with_runtime_override(runtime_override),
                 )
             })
             .map_err(|e| anyhow::anyhow!("{}: {e}", dir.join("artifact.json.zst").display()))
@@ -209,11 +200,8 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
             let replay = polkadot_frame_trace_replay::online_with_session(
                 &rpc,
                 args.block.as_deref().unwrap_or_default(),
-                &polkadot_frame_trace_replay::ReplaySession::with_cache_max_bytes(
-                    args.cache_dir.as_deref(),
-                    args.cache_max_bytes,
-                )?
-                .with_runtime_override(runtime_override),
+                &polkadot_frame_trace_replay::ReplaySession::new()?
+                    .with_runtime_override(runtime_override),
             )
             .inspect_err(|_| {
                 say!("root check: NOT VERIFIED; RPC calls: {}", rpc.count());

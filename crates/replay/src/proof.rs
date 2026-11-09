@@ -76,11 +76,7 @@ pub struct ProofDb {
 impl ProofDb {
     #[cfg(test)]
     pub fn new(rpc: Option<Rpc>, parent: H256) -> Self {
-        Self::with_session(
-            rpc,
-            parent,
-            ReplaySession::new(None).expect("cache directory"),
-        )
+        Self::with_session(rpc, parent, ReplaySession::new().expect("cache directory"))
     }
     pub fn with_session(rpc: Option<Rpc>, parent: H256, session: ReplaySession) -> Self {
         let online = rpc.is_some();
@@ -204,7 +200,7 @@ impl ProofDb {
     pub fn insert_nodes(&self, fetched: impl IntoIterator<Item = Vec<u8>>) {
         self.admit_nodes(fetched).expect("within the replay limits");
     }
-    /// Adds nodes from the node, the disk cache or a saved replay, and shares them with the
+    /// Adds nodes from the node or a saved replay, and shares them with the
     /// session's memory cache. Fails at the first node past the replay limits.
     pub fn admit_nodes(&self, fetched: impl IntoIterator<Item = Vec<u8>>) -> Result<()> {
         let fetched: Vec<_> = fetched
@@ -265,11 +261,6 @@ impl ProofDb {
                 .map_err(|e| self.fail_with(e))?;
             return Ok(Some(node.to_vec()));
         }
-        if let Some(node) = self.session.disk.as_ref().and_then(|disk| disk.get(hash)) {
-            self.admit_nodes([node.clone()])
-                .map_err(|e| self.fail_with(e))?;
-            return Ok(Some(node));
-        }
         Ok(None)
     }
     pub fn remember_key(&self, key: &[u8]) {
@@ -329,25 +320,10 @@ impl ProofDb {
             value
         }
     }
-    pub fn persist(&self) -> Result<()> {
+    pub fn remember_paths(&self) {
         if self.rpc.is_some() {
             self.session.remember_paths(self.observed.lock().clone());
         }
-        if let Some(disk) = &self.session.disk {
-            let nodes: Vec<_> = self
-                .nodes
-                .lock()
-                .iter()
-                .map(|(h, n)| (*h, n.clone()))
-                .collect();
-            // The cache is disposable: a failed write costs a later fetch, never this block.
-            if let Err(e) = disk.append(nodes.iter().map(|(h, n)| (h, n.as_ref())))
-                && !self.session.warned_write.swap(true, Ordering::Relaxed)
-            {
-                note!("warning: disk cache: cannot write: {e}");
-            }
-        }
-        Ok(())
     }
     pub fn retain_nodes(&self, nodes: &[Vec<u8>]) -> Result<()> {
         self.admit_nodes(nodes.iter().cloned())?;
@@ -544,7 +520,7 @@ mod prediction_tests {
     use super::*;
     #[test]
     fn predictions_keep_three_replays_at_most_4096_paths_and_31_related_keys() {
-        let session = ReplaySession::new(None).expect("session");
+        let session = ReplaySession::new().expect("session");
         session.remember_paths([b"old".to_vec()].into());
         for i in 0..3 {
             session.remember_paths([vec![i]].into());
@@ -563,7 +539,7 @@ mod prediction_tests {
     }
     #[test]
     fn active_blocks_share_immutable_nodes_without_sharing_offline_coverage() {
-        let session = ReplaySession::new(None).expect("session");
+        let session = ReplaySession::new().expect("session");
         let rpc = Rpc::new("ws://127.0.0.1:1").expect("lazy RPC");
         let first = ProofDb::with_session(Some(rpc.clone()), H256::repeat_byte(1), session.clone());
         let second = ProofDb::with_session(Some(rpc), H256::repeat_byte(2), session.clone());

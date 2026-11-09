@@ -99,7 +99,7 @@ fn call_and_import_expose_different_proof_size_policies_and_a_runtime_version_re
             (i64.const 34359738376))
         (func (export "Probe_version") (param i32 i32) (result i64)
             (call $version (i64.const 0))))"#).unwrap();
-    let session = ReplaySession::new(None).unwrap();
+    let session = ReplaySession::new().unwrap();
     let db = ProofDb::new(None, H256::zero());
     let executor = session.executor_for(&wasm);
     let run = |method, context| {

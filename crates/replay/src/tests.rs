@@ -215,7 +215,7 @@ fn authenticates_remote_child_proofs_and_offline_child_root_changes() {
 }
 
 /// A block fetched from a node replays with no RPC in the timed run and round-trips offline.
-/// The same block with a wrong state root fails, and records no hints or disk cache.
+/// The same block with a wrong state root fails, and records no hints.
 #[test]
 fn online_acquisition_pins_context_measures_with_zero_rpc_and_a_failed_root_check_keeps_nothing() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay/people-transfer");
@@ -278,7 +278,7 @@ fn online_acquisition_pins_context_measures_with_zero_rpc_and_a_failed_root_chec
             method => panic!("unexpected RPC {method}"),
         }
     });
-    let session = ReplaySession::new(None)
+    let session = ReplaySession::new()
         .unwrap()
         .with_speculative_discovery(false);
     let result = online_with_session(&rpc, "2", &session).unwrap();
@@ -293,20 +293,13 @@ fn online_acquisition_pins_context_measures_with_zero_rpc_and_a_failed_root_chec
     let offline = replay(result.artifact, None).unwrap();
     assert_eq!(offline.expected_state_root, offline.computed_state_root);
 
-    let dir = std::env::temp_dir().join(format!(
-        "polkadot-frame-trace-root-fail-{}",
-        std::process::id()
-    ));
-    let session = ReplaySession::new(Some(&dir))
+    let session = ReplaySession::new()
         .unwrap()
         .with_speculative_discovery(false);
     let error = online_with_session(&rpc, &tampered_hash, &session).unwrap_err();
     assert!(matches!(error, Error::Execution(_)), "{error}");
     assert!(session.predicted_keys().is_empty(), "hints recorded");
-    let written = session.disk.as_ref().unwrap().node_count();
-    assert_eq!(written, 0, "proof nodes written to the disk cache");
     stop(halt, worker);
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -350,7 +343,7 @@ fn proof_prefetch_batches_keys_and_bounds_parallel_requests() {
 
 #[test]
 fn shared_nodes_are_reauthenticated_at_each_blocks_root() {
-    let session = ReplaySession::new(None).unwrap();
+    let session = ReplaySession::new().unwrap();
     let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
     seed.execute_with(|| sp_io::storage::set(b"key", b"value"));
     seed.commit_all().unwrap();
@@ -410,194 +403,6 @@ fn stalled_websocket_handshake_has_deadline_and_can_be_cancelled() {
         cancellation.join().unwrap();
         node.join().unwrap();
     }
-}
-
-/// Writes fail part-way when files may not grow past 20 or 40 KiB (`ulimit -f 40`), so this
-/// runs itself again in a shell with that limit and `SIGXFSZ` ignored.
-#[test]
-fn disk_cache_write_failures_are_cut_back_counted_and_warned_once() {
-    use std::os::unix::fs::MetadataExt;
-    const CHILD: &str = "FRAME_TRACE_WRITE_FAILURE_CHILD";
-    if let Some(dir) = std::env::var_os(CHILD) {
-        let dir = std::path::PathBuf::from(dir);
-        let session = ReplaySession::with_cache_max_bytes(Some(&dir), 1 << 20).unwrap();
-        let disk = session.disk.clone().unwrap();
-        disk.wait_loaded();
-        for block in 0u32..40 {
-            let db = ProofDb::with_session(None, H256::zero(), session.clone());
-            db.insert_nodes(
-                (block * 20..block * 20 + 20)
-                    .map(|i| [i.to_le_bytes().as_slice(), &[7; 1000]].concat()),
-            );
-            db.persist().unwrap();
-        }
-        let (mut real, mut files) = (0, 0);
-        for entry in std::fs::read_dir(dir.join("proof-nodes")).unwrap() {
-            real += entry.unwrap().metadata().unwrap().blocks() * 512 + 4096;
-            files += 1;
-        }
-        println!(
-            "child: total {} real {real} files {files} segments {}",
-            disk.total(),
-            disk.segment_count()
-        );
-        assert!(
-            real <= disk.total(),
-            "{real} on disk, {} counted",
-            disk.total()
-        );
-        assert_eq!(files, disk.segment_count());
-        return;
-    }
-    let dir = std::env::temp_dir().join(format!(
-        "polkadot-frame-trace-write-failure-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    let out = std::process::Command::new("/bin/sh")
-        .args(["-c", "trap '' XFSZ; ulimit -f 40; exec \"$0\" \"$@\""])
-        .arg(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "tests::disk_cache_write_failures_are_cut_back_counted_and_warned_once",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(CHILD, &dir)
-        .output()
-        .unwrap();
-    let (stdout, stderr) = (
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    std::fs::remove_dir_all(&dir).unwrap();
-    assert!(
-        out.status.success() && stdout.contains("child: total"),
-        "{stdout}{stderr}"
-    );
-    assert_eq!(
-        stderr.matches("warning: disk cache: cannot write:").count(),
-        1,
-        "{stderr}"
-    );
-}
-
-#[test]
-fn persistent_node_cache_reuses_and_heals_corrupt_nodes() {
-    use sp_state_machine::TrieBackendStorage;
-    use std::os::unix::fs::FileExt;
-    let dir = std::env::temp_dir().join(format!(
-        "polkadot-frame-trace-node-cache-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    let session = |dir: &Path| {
-        let session = ReplaySession::new(Some(dir)).unwrap();
-        session.disk.as_ref().unwrap().wait_loaded();
-        session
-    };
-    let bytes = vec![1, 2, 3, 4];
-    let hash = H256::from(sp_io::hashing::blake2_256(&bytes));
-    let rpc = Rpc::new("http://127.0.0.1:1").unwrap();
-    let first = ProofDb::with_session(Some(rpc.clone()), H256::repeat_byte(1), session(&dir));
-    first.insert_nodes([bytes.clone()]);
-    first.persist().unwrap();
-    let second = ProofDb::with_session(Some(rpc.clone()), H256::repeat_byte(2), session(&dir));
-    assert_eq!(
-        TrieBackendStorage::get(&second, &hash, EMPTY_PREFIX).unwrap(),
-        Some(bytes.clone())
-    );
-    assert_eq!(rpc.count(), 0);
-    // Damage the node's bytes in the first segment, after the 8-byte magic and 36-byte header.
-    let segment = dir.join("proof-nodes").join("0000000000.seg");
-    std::fs::File::options()
-        .write(true)
-        .open(&segment)
-        .unwrap()
-        .write_all_at(&[9], 8 + 36 + 2)
-        .unwrap();
-    let parent = H256::repeat_byte(3);
-    let (healing_rpc, _, halt, worker) =
-        server(move |_| json!({"at":parent,"proof":[rpc::hex0(&[1,2,3,4])]}));
-    let third = ProofDb::with_session(Some(healing_rpc.clone()), parent, session(&dir));
-    assert_eq!(
-        TrieBackendStorage::get(&third, &hash, EMPTY_PREFIX).unwrap(),
-        Some(bytes.clone())
-    );
-    third.persist().unwrap();
-    assert_eq!(healing_rpc.count(), 1);
-    // The fetched copy went to a new segment, and the next session reads it from disk.
-    let fourth = ProofDb::with_session(Some(rpc.clone()), H256::repeat_byte(4), session(&dir));
-    assert_eq!(
-        TrieBackendStorage::get(&fourth, &hash, EMPTY_PREFIX).unwrap(),
-        Some(bytes)
-    );
-    assert_eq!(rpc.count(), 0);
-    stop(halt, worker);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn disk_cache_limit_evicts_unused_runtimes_before_proof_nodes_and_bounds_both() {
-    let dir = std::env::temp_dir().join(format!(
-        "polkadot-frame-trace-eviction-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    let cap = 256 * 1024;
-    let session = ReplaySession::with_cache_max_bytes(Some(&dir), cap).unwrap();
-    let _active = session.executor_for(b"runtime");
-    let unused = dir.join("wasm/unused");
-    std::fs::write(&unused, vec![0; 200 * 1024]).unwrap();
-    session.prune_disk_cache().unwrap();
-    assert!(unused.exists(), "deleted while under the limit");
-    let node = |i: u32| [i.to_le_bytes().as_slice(), &[7; 200]].concat();
-    let persist = |blocks: std::ops::Range<u32>| {
-        for block in blocks {
-            let db = ProofDb::with_session(None, H256::zero(), session.clone());
-            db.insert_nodes((block * 100..block * 100 + 100).map(node));
-            db.persist().unwrap();
-        }
-    };
-    // About 100 KB of nodes: with the runtime, more than the limit. The runtime goes first.
-    persist(0..4);
-    session.prune_disk_cache().unwrap();
-    assert!(!unused.exists(), "an unused runtime outlived the limit");
-    let oldest = node(0);
-    assert_eq!(
-        session
-            .disk
-            .as_ref()
-            .unwrap()
-            .get(&H256::from(sp_io::hashing::blake2_256(&oldest))),
-        Some(oldest),
-        "the oldest node went before an unused runtime"
-    );
-    persist(4..20);
-    // Even a failed replay runs maintenance and preserves the original execution error.
-    let mut artifact = Artifact::load(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replay/people-transfer"),
-    )
-    .unwrap();
-    artifact.format_version = 999;
-    assert!(
-        replay_with_session(artifact, None, &session)
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported artifact version")
-    );
-    let used: u64 = std::fs::read_dir(dir.join("proof-nodes"))
-        .unwrap()
-        .map(|e| crate::disk::file_charge(&e.unwrap().metadata().unwrap()))
-        .sum();
-    assert!(used > 0 && used <= cap, "{used} bytes of proof nodes");
-    let zero = ReplaySession::with_cache_max_bytes(Some(&dir), 0).unwrap();
-    assert_eq!(
-        std::fs::read_dir(dir.join("proof-nodes")).unwrap().count(),
-        0
-    );
-    drop(zero);
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -670,7 +475,7 @@ fn prefetch_skips_covered_paths_and_wrong_predictions_keep_results_and_artifacts
     );
 
     // Cached paths are skipped only when the cached nodes cover them from the new root.
-    let session = ReplaySession::new(None).unwrap();
+    let session = ReplaySession::new().unwrap();
     let first = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
     first.insert_nodes(nodes);
     let warm = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
@@ -696,7 +501,7 @@ fn prefetch_skips_covered_paths_and_wrong_predictions_keep_results_and_artifacts
 
     // Wrong predictions fetch nodes the block never uses: results stay right and the
     // artifact keeps only the nodes execution used.
-    let session = ReplaySession::new(None).unwrap();
+    let session = ReplaySession::new().unwrap();
     session.remember_paths((0..255u8).map(|i| vec![i, 255]).collect());
     let db = ProofDb::with_session(Some(rpc), parent, session.clone());
     db.set_root(root);
@@ -787,7 +592,7 @@ mod runtime_override {
 
     #[test]
     fn changed_spec_version_is_reported_before_execution() {
-        let session = ReplaySession::new(None)
+        let session = ReplaySession::new()
             .unwrap()
             .with_runtime_override(Some(bump_spec_version(&traced_wasm())));
         let result = replay_with_session(
@@ -813,7 +618,7 @@ mod runtime_override {
             .map(|n| unhex(n).unwrap())
             .max_by_key(Vec::len)
             .unwrap();
-        let session = ReplaySession::new(None)
+        let session = ReplaySession::new()
             .unwrap()
             .with_runtime_override(Some(westend));
         let error = replay_with_session(
@@ -951,7 +756,7 @@ fn real_contract_call_fetches_pinned_child_proofs_and_rejects_bad_ones() {
         });
         // Speculative discovery on, as in production: its pending misses must keep their
         // child namespace.
-        let session = ReplaySession::new(None).unwrap();
+        let session = ReplaySession::new().unwrap();
         let result = online_with_session(&rpc, &format!("{:?}", artifact.block_hash), &session);
         let requests = requests.lock().unwrap().clone();
         stop(halt, worker);

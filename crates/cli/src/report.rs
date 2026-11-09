@@ -32,12 +32,6 @@ pub struct ReportArgs {
     /// Longest wait in seconds for one RPC response; each request gets four tries.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = crate::source::rpc_timeout, requires = "rpc", conflicts_with_all = ["files"])]
     rpc_timeout: std::time::Duration,
-    /// Persist authenticated proof nodes and compiled Wasm in this directory.
-    #[arg(long, requires = "rpc", conflicts_with_all = ["files"])]
-    cache_dir: Option<PathBuf>,
-    /// Combined proof-node/compiled-Wasm disk cache limit in bytes (default 1 GiB).
-    #[arg(long, default_value_t = 1073741824, requires = "rpc", conflicts_with_all = ["files"])]
-    cache_max_bytes: u64,
     /// Maximum rows in each ranked item, extrinsic and hook table (JSON is complete).
     #[arg(long, default_value_t = 15)]
     top: usize,
@@ -112,8 +106,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
             args.rpc_timeout,
             Default::default(),
         )?;
-        let session =
-            ReplaySession::with_cache_max_bytes(args.cache_dir.as_deref(), args.cache_max_bytes)?;
+        let session = ReplaySession::new()?;
         let header = rpc.finalized_header()?;
         let finalized = u64::from_str_radix(
             header["number"]

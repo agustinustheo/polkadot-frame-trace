@@ -9,7 +9,7 @@ This replays the last five finalized blocks of Westend Asset Hub:
 
 ```sh
 polkadot-frame-trace report --rpc wss://westend-asset-hub-rpc.polkadot.io --last 5 --top 5 \
-  --cache-dir .polkadot-frame-trace-cache --json range.json
+  --json range.json
 ```
 
 The progress lines for each block come first, then the tables:
@@ -59,7 +59,7 @@ Extrinsic distributions (ranked by total proof bytes)
 
 It took 38 seconds.
 The first two blocks needed 85 and 87 RPC calls.
-Later blocks needed about 40, because `--cache-dir` kept state the earlier blocks fetched.
+Later blocks reused state the earlier blocks fetched in memory.
 
 ## 2. Read the result
 
@@ -94,7 +94,6 @@ Saved files need no network.
 | `--top N` | Rows per table in the terminal. JSON always has every row. |
 | `--sort-by proof\|ops\|time` | Rank items, extrinsics and hooks by proof bytes, operations or storage time. |
 | `--workers N` | Blocks replayed at once, 1 to 4. |
-| `--cache-dir DIR` | Keep a [disk cache](../reference/commands.md#disk-cache) of downloaded state and compiled runtimes between blocks and runs. |
 | `--json FILE` | Write the full report as JSON. `-` writes it to stdout and the tables to stderr. |
 
 ## When a block fails

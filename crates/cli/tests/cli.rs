@@ -40,20 +40,12 @@ fn ignored_source_options_are_rejected_before_loading_or_connecting() {
     ];
     // A source with an option it would ignore.
     let mut ignored = vec![vec!["call", "--offline", "missing", "--check-state-call"]];
-    for flags in [
-        &["--block", "1"][..],
-        &["--cache-dir", "cache"],
-        &["--cache-max-bytes", "1073741824"],
-    ] {
-        ignored.push([&["block", "--from-json", "missing"][..], flags].concat());
-    }
+    ignored.push(vec!["block", "--from-json", "missing", "--block", "1"]);
     for flags in [
         ["--from", "1"],
         ["--to", "2"],
         ["--last", "2"],
         ["--workers", "2"],
-        ["--cache-dir", "cache"],
-        ["--cache-max-bytes", "1073741824"],
     ] {
         ignored.push([&["report", "missing.json"][..], &flags].concat());
     }

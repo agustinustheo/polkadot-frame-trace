@@ -11,7 +11,7 @@ fn fixture(name: &str) -> PathBuf {
 #[test]
 fn offline_calls_reject_wrong_result_state_and_missing_proofs() {
     let original = Artifact::load(&fixture("call-people-nonce")).unwrap();
-    let session = ReplaySession::new(None).unwrap();
+    let session = ReplaySession::new().unwrap();
     let mut artifact = original.clone();
     artifact.call.as_mut().unwrap().result = Some("0x01000000".into());
     assert!(
@@ -48,7 +48,7 @@ fn offline_dry_run_set_empty_code_uses_version_reader_and_matches_recorded_oracl
     let replay = call::replay(
         Artifact::load(&fixture("call-westend-dryrun")).unwrap(),
         None,
-        &ReplaySession::new(None).unwrap(),
+        &ReplaySession::new().unwrap(),
         false,
     )
     .unwrap();
@@ -68,17 +68,9 @@ fn stored_metadata_is_ignored_and_unused_nodes_are_not_exported() {
     artifact.metadata = "lying metadata".into();
     let junk = "0xdeadbeefcafebabe";
     artifact.proof_nodes.push(junk.into());
-    let replay = call::replay(artifact, None, &ReplaySession::new(None).unwrap(), false).unwrap();
+    let replay = call::replay(artifact, None, &ReplaySession::new().unwrap(), false).unwrap();
     assert_eq!(replay.result, 520u32.to_le_bytes());
     assert_eq!(replay.artifact.metadata, original.metadata);
     assert!(!replay.artifact.proof_nodes.iter().any(|node| node == junk));
-    assert!(
-        call::replay(
-            replay.artifact,
-            None,
-            &ReplaySession::new(None).unwrap(),
-            false
-        )
-        .is_ok()
-    );
+    assert!(call::replay(replay.artifact, None, &ReplaySession::new().unwrap(), false).is_ok());
 }

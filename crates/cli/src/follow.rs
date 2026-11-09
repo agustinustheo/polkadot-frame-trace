@@ -291,7 +291,6 @@ fn drop_oldest(state: &mut Ledger) -> Option<String> {
 struct Totals {
     stopped: u64,
     skipped: u64,
-    reverted: u64,
     cancelled: u64,
     poll_failures: u64,
 }
@@ -318,7 +317,6 @@ enum State {
     Done,
     Failed,
     Terminal,
-    Reverted,
     Skipped,
     Cancelled,
 }
@@ -327,13 +325,11 @@ struct Entry {
     state: State,
     attempts: u32,
     retry_at: Instant,
-    reverted: Arc<AtomicBool>,
 }
 #[derive(Clone)]
 struct Job {
     hash: String,
     number: u64,
-    reverted: Arc<AtomicBool>,
 }
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
@@ -344,8 +340,8 @@ enum Outcome {
     Cancelled,
 }
 enum Event {
-    Started(String, Arc<AtomicBool>),
-    Finished(String, Arc<AtomicBool>, Outcome),
+    Started(String),
+    Finished(String, Outcome),
 }
 
 #[derive(Debug)]
@@ -356,16 +352,6 @@ impl std::fmt::Display for Skipped {
     }
 }
 impl std::error::Error for Skipped {}
-
-fn current_entry<'a>(
-    entries: &'a mut BTreeMap<String, Entry>,
-    hash: &str,
-    generation: &Arc<AtomicBool>,
-) -> Option<&'a mut Entry> {
-    entries
-        .get_mut(hash)
-        .filter(|entry| Arc::ptr_eq(&entry.reverted, generation))
-}
 
 // The catch covers acquisition, conversion, annotation and span building, not just the executor.
 fn job_outcome(run: impl FnOnce() -> Result<()>) -> Outcome {
@@ -408,17 +394,12 @@ fn job_outcome(run: impl FnOnce() -> Result<()>) -> Outcome {
 }
 fn finish(entry: &mut Entry, outcome: &Outcome) {
     entry.attempts += 1;
-    // A reverted block is counted once, as reverted, however its job ended.
-    entry.state = if entry.reverted.load(Ordering::SeqCst) {
-        State::Reverted
-    } else {
-        match outcome {
-            Outcome::Passed => State::Done,
-            Outcome::Skipped => State::Skipped,
-            Outcome::Cancelled => State::Cancelled,
-            Outcome::Retryable if entry.attempts < MAX_ATTEMPTS => State::Failed,
-            _ => State::Terminal,
-        }
+    entry.state = match outcome {
+        Outcome::Passed => State::Done,
+        Outcome::Skipped => State::Skipped,
+        Outcome::Cancelled => State::Cancelled,
+        Outcome::Retryable if entry.attempts < MAX_ATTEMPTS => State::Failed,
+        _ => State::Terminal,
     };
     entry.retry_at = Instant::now()
         + Duration::from_millis(
@@ -430,7 +411,7 @@ fn number(header: &serde_json::Value) -> Result<u64> {
     Ok(u64::from_str_radix(text.trim_start_matches("0x"), 16)?)
 }
 
-/// Bound both startup/reorg ancestry and catch-up to the recent tip. No pre-start backfill.
+/// Bound both startup ancestry and catch-up to the recent tip. No pre-start backfill.
 fn ancestry(
     mut header: serde_json::Value,
     floor: Option<u64>,
@@ -446,11 +427,7 @@ fn ancestry(
     loop {
         let height = number(&header)?;
         let hash = polkadot_frame_trace_replay::header_hash(&header)?;
-        if height < lower
-            || known
-                .get(&hash)
-                .is_some_and(|e| !e.reverted.load(Ordering::SeqCst))
-        {
+        if height < lower || known.contains_key(&hash) {
             break;
         }
         pending.push((hash, height));
@@ -460,10 +437,7 @@ fn ancestry(
         let hash = header["parentHash"]
             .as_str()
             .context("parent hash missing")?;
-        if known
-            .get(hash)
-            .is_some_and(|e| !e.reverted.load(Ordering::SeqCst))
-        {
+        if known.contains_key(hash) {
             break;
         }
         let fetched = parent(hash)?;
@@ -479,43 +453,6 @@ fn ancestry(
     }
     Ok(pending)
 }
-/// Marks blocks replaced by a reorg and returns how many were newly reverted.
-fn report_reorg(pending: &[(String, u64)], tip: u64, entries: &mut BTreeMap<String, Entry>) -> u64 {
-    let fork = pending
-        .iter()
-        .filter_map(|(hash, number)| {
-            entries
-                .iter()
-                .any(|(old, e)| {
-                    old != hash && e.number == *number && !e.reverted.load(Ordering::SeqCst)
-                })
-                .then_some(*number)
-        })
-        .chain(
-            entries
-                .values()
-                .any(|e| e.number > tip && !e.reverted.load(Ordering::SeqCst))
-                .then(|| tip.saturating_add(1)),
-        )
-        .min();
-    let mut reverted = 0;
-    if let Some(fork) = fork {
-        for (hash, entry) in entries.iter_mut().filter(|(_, e)| e.number >= fork) {
-            if !entry.reverted.swap(true, Ordering::SeqCst) {
-                shout!(
-                    "reorg: reverted block #{} {hash} (previous state {:?}; previously traced={})",
-                    entry.number,
-                    entry.state,
-                    entry.state == State::Done
-                );
-                entry.state = State::Reverted;
-                reverted += 1;
-            }
-        }
-    }
-    reverted
-}
-
 /// Runs `follow`. Its log, including a startup or fatal error, goes through the log queue, so
 /// a blocked stderr cannot keep it from exiting.
 pub fn run(args: FollowArgs) -> Result<()> {
@@ -583,13 +520,11 @@ fn follow(args: FollowArgs) -> Result<()> {
         .map(polkadot_frame_trace_otel::OtlpSender::new)
         .transpose()
         .context("--otlp")?;
-    let session =
-        ReplaySession::with_cache_max_bytes(args.cache_dir.as_deref(), args.cache_max_bytes)?;
+    let session = ReplaySession::new()?;
     let capacity = queue_capacity(args.workers);
     let (send, receive) = mpsc::sync_channel::<Job>(capacity);
     let (events, completed) = mpsc::channel();
     let receive = Arc::new(Mutex::new(receive));
-    let head_kind = if args.best { "best" } else { "finalized" };
     let active_floor = Arc::new(AtomicU64::new(0));
     let otlp = sender.is_some();
     let shared = Arc::new(Shared::default());
@@ -638,21 +573,19 @@ fn follow(args: FollowArgs) -> Result<()> {
                     if rpc.cancelled() {
                         break;
                     }
-                    let _ = events.send(Event::Started(job.hash.clone(), job.reverted.clone()));
+                    let _ = events.send(Event::Started(job.hash.clone()));
                     let outcome = job_outcome(|| {
                         // Waits behind a cold replay; returns Cancelled before or after admission.
                         // Expiry is checked after admission, since the wait can outlast the window.
                         let cold_start = session.cold_start(&cancel)?;
-                        if job.reverted.load(Ordering::SeqCst) {
-                            return Err(Skipped("block already reverted").into());
-                        }
                         if job.number < active_floor.load(Ordering::SeqCst) {
                             return Err(Skipped("queued block expired behind tip").into());
                         }
                         let start = Instant::now();
                         let _replaying = Replaying::new(&replaying, job.number, &job.hash);
-                        let replay =
-                            polkadot_frame_trace_replay::online_with_session(&rpc, &job.hash, &session)?;
+                        let replay = polkadot_frame_trace_replay::online_with_session(
+                            &rpc, &job.hash, &session,
+                        )?;
                         drop(cold_start);
                         let loaded = source::replay_loaded(replay, None)?;
                         let mut block = polkadot_frame_trace_decode::annotate_at_block(
@@ -668,20 +601,11 @@ fn follow(args: FollowArgs) -> Result<()> {
                             spans: polkadot_frame_trace_otel::prepare(&block, Timing::default()),
                         });
                         let admitted = shared.admit(trace, || {
-                            let _ = events.send(Event::Finished(
-                                job.hash.clone(),
-                                job.reverted.clone(),
-                                Outcome::Passed,
-                            ));
+                            let _ = events.send(Event::Finished(job.hash.clone(), Outcome::Passed));
                         });
                         if admitted {
                             say!(
-                                "traced {}{head_kind} block #{} {}: {} storage operations in {:.3}s",
-                                if job.reverted.load(Ordering::SeqCst) {
-                                    "reverted "
-                                } else {
-                                    ""
-                                },
+                                "traced finalized block #{} {}: {} storage operations in {:.3}s",
                                 job.number,
                                 job.hash,
                                 block.totals.ops,
@@ -695,7 +619,7 @@ fn follow(args: FollowArgs) -> Result<()> {
                         Ok(())
                     });
                     if outcome != Outcome::Passed {
-                        let _ = events.send(Event::Finished(job.hash, job.reverted, outcome));
+                        let _ = events.send(Event::Finished(job.hash, outcome));
                     }
                 }
             })
@@ -715,15 +639,13 @@ fn follow(args: FollowArgs) -> Result<()> {
     };
     let process =
         |event: Event, entries: &mut BTreeMap<String, Entry>, totals: &mut Totals| match event {
-            Event::Started(hash, generation) => {
-                if let Some(entry) = current_entry(entries, &hash, &generation)
-                    && !entry.reverted.load(Ordering::SeqCst)
-                {
+            Event::Started(hash) => {
+                if let Some(entry) = entries.get_mut(&hash) {
                     entry.state = State::InFlight;
                 }
             }
-            Event::Finished(hash, generation, outcome) => {
-                if let Some(entry) = current_entry(entries, &hash, &generation) {
+            Event::Finished(hash, outcome) => {
+                if let Some(entry) = entries.get_mut(&hash) {
                     finish(entry, &outcome);
                     totals.count(entry.state);
                     if entry.state == State::Terminal {
@@ -773,11 +695,7 @@ fn follow(args: FollowArgs) -> Result<()> {
             break;
         }
         let result = (|| -> Result<()> {
-            let header = if args.best {
-                rpc.call("chain_getHeader", serde_json::json!([]))?
-            } else {
-                rpc.finalized_header()?
-            };
+            let header = rpc.finalized_header()?;
             let tip = number(&header)?;
             floor = Some(
                 floor
@@ -788,17 +706,12 @@ fn follow(args: FollowArgs) -> Result<()> {
             let pending = ancestry(header, floor, &entries, capacity, |hash| {
                 Ok(rpc.call("chain_getHeader", serde_json::json!([hash]))?)
             })?;
-            if args.best {
-                totals.reverted += report_reorg(&pending, tip, &mut entries);
-            }
             // Newest first: a saturated queue cannot force a long catch-up of stale blocks.
             let mut saturated = false;
             for (hash, number) in pending {
-                let reverted = Arc::new(AtomicBool::new(false));
                 match send.try_send(Job {
                     hash: hash.clone(),
                     number,
-                    reverted: reverted.clone(),
                 }) {
                     Ok(()) => {
                         order.retain(|old| old != &hash);
@@ -810,7 +723,6 @@ fn follow(args: FollowArgs) -> Result<()> {
                                 state: State::Queued,
                                 attempts: 0,
                                 retry_at: Instant::now(),
-                                reverted,
                             },
                         );
                     }
@@ -839,7 +751,6 @@ fn follow(args: FollowArgs) -> Result<()> {
                         .try_send(Job {
                             hash: hash.clone(),
                             number: entry.number,
-                            reverted: entry.reverted.clone(),
                         })
                         .is_ok()
                 {
@@ -978,8 +889,8 @@ fn follow(args: FollowArgs) -> Result<()> {
             dropped => format!(" log-dropped={dropped}"),
         };
         format!(
-            "follow stopped after {uptime}: traced={traced}{export_summary} stopped={} skipped={} reverted={} cancelled={} poll-failures={}{log_dropped}",
-            totals.stopped, totals.skipped, totals.reverted, totals.cancelled, totals.poll_failures
+            "follow stopped after {uptime}: traced={traced}{export_summary} stopped={} skipped={} cancelled={} poll-failures={}{log_dropped}",
+            totals.stopped, totals.skipped, totals.cancelled, totals.poll_failures
         )
     });
     match fatal {
@@ -998,11 +909,10 @@ fn status_line(
 ) -> (String, String) {
     let count = |state| entries.values().filter(|e| e.state == state).count();
     let problems = format!(
-        "retrying={} stopped={} skipped={} reverted={}",
+        "retrying={} stopped={} skipped={}",
         count(State::Failed),
         totals.stopped,
-        totals.skipped,
-        totals.reverted
+        totals.skipped
     );
     let state = shared.lock();
     let mut line = format!(
@@ -1074,7 +984,6 @@ mod tests {
             state,
             attempts: 0,
             retry_at: Instant::now(),
-            reverted: Arc::new(AtomicBool::new(false)),
         }
     }
     #[test]
@@ -1096,43 +1005,6 @@ mod tests {
         }
         streak.logged = Some(Instant::now() - HEARTBEAT);
         assert!(streak.fail(), "logged again once a minute has passed");
-    }
-    #[test]
-    fn reorg_walk_stops_at_start_height_and_reports_traced_reversions() {
-        let zero = format!("0x{}", "00".repeat(32));
-        let old = header(100, &zero, 1);
-        let old_hash = polkadot_frame_trace_replay::header_hash(&old).unwrap();
-        let mut entries = BTreeMap::from([(old_hash.clone(), entry(100, State::Done))]);
-        let mut fork = Vec::new();
-        let mut parent = zero;
-        for number in 100..=102 {
-            let h = header(number, &parent, 2);
-            parent = polkadot_frame_trace_replay::header_hash(&h).unwrap();
-            fork.push(h);
-        }
-        let mut calls = 0;
-        let pending = ancestry(fork[2].clone(), Some(100), &entries, 8, |hash| {
-            calls += 1;
-            Ok(fork
-                .iter()
-                .find(|h| polkadot_frame_trace_replay::header_hash(h).unwrap() == hash)
-                .unwrap()
-                .clone())
-        })
-        .unwrap();
-        assert_eq!(calls, 2);
-        assert_eq!(
-            pending.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
-            [102, 101, 100]
-        );
-        report_reorg(&pending, 102, &mut entries);
-        assert_eq!(entries[&old_hash].state, State::Reverted);
-        finish(entries.get_mut(&old_hash).unwrap(), &Outcome::Passed);
-        assert_eq!(entries[&old_hash].state, State::Reverted);
-        // A best head that steps back reverts the descendants, even with nothing pending.
-        let mut entries = BTreeMap::from([("old".into(), entry(100, State::Done))]);
-        report_reorg(&[], 99, &mut entries);
-        assert_eq!(entries["old"].state, State::Reverted);
     }
     #[test]
     fn catch_up_is_limited_to_eight_recent_blocks_and_startup_only_the_tip() {
@@ -1287,7 +1159,7 @@ mod tests {
         );
     }
     #[test]
-    fn job_outcomes_map_panics_retries_and_reverts_to_the_right_state() {
+    fn job_outcomes_map_panics_and_retries_to_the_right_state() {
         // A panic anywhere in the job is terminal, and the worker takes the next job.
         for stage in ["replay_loaded", "annotate", "export"] {
             assert_eq!(job_outcome(|| panic!("{stage}")), Outcome::Terminal);
@@ -1320,13 +1192,6 @@ mod tests {
             job_outcome(|| Err(Skipped("expired").into())),
             Outcome::Skipped
         );
-        // A reverted block is counted as reverted, not also as skipped or cancelled.
-        let mut reverted = entry(1, State::InFlight);
-        reverted.reverted.store(true, Ordering::SeqCst);
-        finish(&mut reverted, &Outcome::Skipped);
-        assert_eq!(reverted.state, State::Reverted);
-        finish(&mut reverted, &Outcome::Cancelled);
-        assert_eq!(reverted.state, State::Reverted);
         let mut skipped = entry(2, State::InFlight);
         finish(&mut skipped, &Outcome::Skipped);
         assert_eq!(skipped.state, State::Skipped);
@@ -1335,51 +1200,6 @@ mod tests {
                 polkadot_frame_trace_replay::Error::TransientRpc("timeout".into()).into()
             )),
             Outcome::Retryable
-        );
-    }
-    #[test]
-    fn reverted_tip_is_eligible_again_and_new_generation_survives_old_completion() {
-        let header = serde_json::json!({"number":"0x1", "parentHash":format!("0x{}", "00".repeat(32)),
-            "stateRoot":format!("0x{}", "11".repeat(32)), "extrinsicsRoot":format!("0x{}", "00".repeat(32)), "digest":{"logs":[]}});
-        let hash = polkadot_frame_trace_replay::header_hash(&header).expect("header");
-        let old = Arc::new(AtomicBool::new(true));
-        let mut entries = BTreeMap::from([(
-            hash.clone(),
-            Entry {
-                number: 1,
-                state: State::Reverted,
-                attempts: 1,
-                retry_at: Instant::now(),
-                reverted: old.clone(),
-            },
-        )]);
-        let pending = ancestry(header.clone(), Some(1), &entries, 8, |_| {
-            panic!("past floor")
-        })
-        .expect("ancestry");
-        assert_eq!(pending, [(hash.clone(), 1)]);
-        let new = Arc::new(AtomicBool::new(false));
-        entries.insert(
-            hash.clone(),
-            Entry {
-                number: 1,
-                state: State::Queued,
-                attempts: 0,
-                retry_at: Instant::now(),
-                reverted: new.clone(),
-            },
-        );
-        assert!(
-            current_entry(&mut entries, &hash, &old).is_none(),
-            "ignore events from the previous job"
-        );
-        let entry = current_entry(&mut entries, &hash, &new).expect("current job");
-        finish(entry, &Outcome::Passed);
-        assert_eq!(entry.state, State::Done);
-        assert!(
-            ancestry(header, Some(1), &entries, 8, |_| panic!("known tip"))
-                .expect("ancestry")
-                .is_empty()
         );
     }
 }

@@ -37,8 +37,6 @@ polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.
 | `--json <FILE>` | | Write the trace as JSON. `-` writes to stdout. |
 | `--top <N>` | 15 | Rows in each item, extrinsic and hook table, and per phase in the duplicate reads table. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
-| `--cache-dir <DIR>` | | Keep the [disk cache](#disk-cache) in this directory between runs. |
-| `--cache-max-bytes <N>` | 1073741824 (1 GiB) | Size limit for the [disk cache](#disk-cache), as bytes used on disk. A runtime in use is kept even above the limit. |
 | `--runtime-override <WASM>` | | Run this Wasm instead of the chain's runtime. See [See runtime calls inside extrinsics](../guides/see-runtime-calls.md). Cannot be combined with `--save`. |
 
 Without `--otlp` or `--json`, `block` prints storage summary tables.
@@ -49,10 +47,11 @@ Then **Hooks**, only with runtime spans, and **Duplicate reads per phase**.
 
 A flag that does not apply to the source fails with exit code 2.
 `--block` and `--rpc-timeout` need `--rpc`.
-The cache flags do not work with `--from-json`.
 
-Without `--cache-dir`, downloaded state stays in memory only.
-Compiled runtimes are still kept in `$XDG_CACHE_HOME/polkadot-frame-trace/wasm`, or `~/.cache/polkadot-frame-trace/wasm`.
+Downloaded state stays in memory only.
+Compiled runtimes are kept in `$XDG_CACHE_HOME/polkadot-frame-trace/wasm`, or `~/.cache/polkadot-frame-trace/wasm`.
+The newest four compiled runtimes are kept; runtimes still loaded by workers also stay.
+The cache must be private and owned by you, because it contains native code.
 Without both `XDG_CACHE_HOME` and `HOME`, they go to `polkadot-frame-trace-<uid>/wasm` in the temporary directory.
 
 These limits protect against a node that sends too much. They apply to every command that uses `--rpc`.
@@ -89,8 +88,6 @@ polkadot-frame-trace call --offline fixtures/replay/call-people-nonce
 | `--json <FILE>` | | Write the trace and result as JSON. `-` writes to stdout and sends tables to stderr. |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send the trace over OTLP/HTTP. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
-| `--cache-dir <DIR>` | | As for `block`. |
-| `--cache-max-bytes <N>` | 1073741824 (1 GiB) | As for `block`. |
 | `--runtime-override <WASM>` | | As for `block`. |
 
 `call` prints storage summary tables by default. With `--json -`, the tables go to stderr.
@@ -112,31 +109,25 @@ polkadot-frame-trace report --rpc URL --last 10
 | `--last <K>` | | The K most recent finalized blocks. |
 | `--workers <N>` | 2 | Blocks replayed at once, 1 to 4. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
-| `--cache-dir <DIR>` | | Keep the [disk cache](#disk-cache) in this directory. |
-| `--cache-max-bytes <N>` | 1073741824 (1 GiB) | Size limit for the [disk cache](#disk-cache), as bytes used on disk. |
 | `--top <N>` | 15 | Rows in each ranked table. JSON is always complete. |
 | `--sort-by <proof\|ops\|time>` | `proof` | Rank items, extrinsics and hooks by proof bytes, operations or storage time. |
 | `--json <FILE>` | | Write the report as JSON. `-` writes it to stdout and the tables to stderr. |
 
 A range holds at most 10,000 blocks.
-`--workers`, `--rpc-timeout`, `--cache-dir` and `--cache-max-bytes` need `--rpc`; with saved files they are refused.
+`--workers` and `--rpc-timeout` need `--rpc`; with saved files they are refused.
 
 ## follow
 
 ```sh
 polkadot-frame-trace follow --rpc URL --otlp
-polkadot-frame-trace follow --rpc URL --best
 ```
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--rpc <URL>` | | Node RPC endpoint, HTTP(S) or WS(S). Required. |
-| `--best` | off | Follow the newest blocks instead of finalized ones, and report reorgs. |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send each trace over OTLP/HTTP. |
 | `--workers <N>` | 8 | Blocks replayed at once, 1 to 16. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
-| `--cache-dir <DIR>` | | Keep the [disk cache](#disk-cache) in this directory. |
-| `--cache-max-bytes <N>` | 1073741824 (1 GiB) | Size limit for the [disk cache](#disk-cache), as bytes used on disk. |
 
 | Limit | Value | Meaning |
 | --- | --- | --- |
@@ -144,9 +135,9 @@ polkadot-frame-trace follow --rpc URL --best
 | Check for new blocks | every 2 s | How often `follow` asks the node for its newest block. |
 | Wait after a failed check | 2 s, doubling to 60 s | Resets after the next check that works. |
 | Attempts per block | 4 | For temporary failures, such as a timeout. Other failures stop the block at once. |
-| Status line | on change, and every 60 s | Printed at once when `retrying`, `stopped`, `skipped`, `reverted`, `export-rejected` or `export-failed` changes. A check for new blocks that waits on the node delays it. |
+| Status line | on change, and every 60 s | Printed at once when `retrying`, `stopped`, `skipped`, `export-rejected` or `export-failed` changes. A check for new blocks that waits on the node delays it. |
 | Repeated failure lines | first, then at most once a minute | For failed checks, failed exports and a full queue. A failure that comes back within the minute is not logged again. |
-| State kept in memory | 128 MiB | Downloaded state shared by all workers. Counts an upper estimate of what each piece and its index take in memory, so the real use is lower. When full, the least recently read piece goes first. With `--cache-dir`, an evicted piece may still be in the [disk cache](#disk-cache). |
+| State kept in memory | 128 MiB | Downloaded state shared by all workers. Counts an upper estimate of what each piece and its index take in memory, so the real use is lower. When full, the least recently read piece goes first. |
 | Traces waiting for export | 32 | Held while the receiver is down. Each holds all spans of one block in memory. When full, the oldest is dropped. |
 | Spans per export request | 512 | An acknowledged request is never sent again. A retry sends only the others. A lost acknowledgement can deliver the same spans twice. |
 | Wait between export tries | 1 s, doubling to 30 s | Each request of a try, with the exporter's own retries, takes at most the OTLP timeout. The block is not replayed again. |
@@ -189,26 +180,3 @@ See [Send traces through Grafana Alloy to Tempo](../guides/send-traces-through-a
 | 2 | The command line was wrong, for example a missing or unknown flag. |
 | 3 | `call --check-state-call` found a different result from the node's. JSON, save and export still ran. |
 | 130 | `follow` got a second stop signal and exited at once. |
-
-## Disk cache
-
-`--cache-dir <DIR>` keeps downloaded state with its proofs in `<DIR>/proof-nodes`, and compiled runtimes in `<DIR>/wasm`, between blocks and runs.
-`--cache-max-bytes` limits both together.
-
-The directory must be private, because compiled runtimes are native code that polkadot-frame-trace runs.
-polkadot-frame-trace creates the directory, `wasm` and `proof-nodes` readable and writable by you alone (mode 0700).
-It does not use a directory that another user owns or that group or others can write.
-It does not use a `wasm` or `proof-nodes` that is a symlink.
-Every directory above it must be owned by root or by you.
-Group and others must not write to those directories, unless they are sticky, as `/tmp` is.
-If a check fails, it logs one warning and runs without that part of the disk cache. See [Disk cache warnings](../troubleshooting.md#disk-cache-warnings).
-
-The limit counts bytes on disk. Each file counts its size rounded up to 4 KiB, plus 4 KiB.
-If the file system gave the file more space, that space counts instead of the size.
-When the disk cache is full, compiled runtimes not in use go first, then the oldest state file.
-The runtime in use is always kept, and so is space for state: 64 MiB, or a quarter of the limit if that is less.
-So the disk cache may go over a small limit.
-It may also go over the limit when files cannot be deleted, or when runtimes were compiled since the last check.
-`--cache-max-bytes 0` keeps no state on disk and deletes runtimes not in use.
-
-Use one polkadot-frame-trace per cache directory. Each process counts only its own files.

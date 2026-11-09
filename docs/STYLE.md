@@ -23,7 +23,6 @@ Sentry's docs are the model. The README shows the result. The first guide ends w
 3. **One term per idea, defined once.** Use these words and no others:
    - **read** and **write** for storage operations, not access, hit or lookup. Use "fetch" only for requests to the node, as the output does;
    - **cache** (a value from the block's earlier writes), **trie** (a value from chain state);
-   - **disk cache** (what `--cache-dir` keeps between blocks and runs), never plain "cache" for it;
    - **proof bytes** (how much this read added to the storage proof);
    - **phase** (initialization, an extrinsic, on_poll, finalization);
    - **replay** (running the block again on your machine);
@@ -42,7 +41,7 @@ Sentry's docs are the model. The README shows the result. The first guide ends w
 11. **Screenshots have callouts.** Every image is annotated with numbered labels that the text refers to. Terminal output is text, not images.
 12. **No filler.** No "simply", "just", "easily", "note that", "it is important to", "in this guide we will". Headings in sentence case.
 13. **Only document what exists.** Every flag and output in the docs must match `polkadot-frame-trace <command> --help` and a real run.
-14. **Simplified Technical English for hard concepts.** Use ASD-STE100 rules on concept pages and wherever an idea is hard: what a replay proves, cache and trie, proof bytes, the root check, phases, the disk cache, runtime upgrades, and `follow`'s retries and stop.
+14. **Simplified Technical English for hard concepts.** Use ASD-STE100 rules on concept pages and wherever an idea is hard: what a replay proves, cache and trie, proof bytes, the root check, phases, runtime upgrades, and `follow`'s retries and stop.
     - Procedures: at most 20 words per sentence, one instruction per sentence, imperative and active voice.
     - Descriptions: at most 25 words per sentence.
     - One simple verb, not a phrasal verb or an idiom: "remove", not "get rid of"; "find", not "look up".

@@ -139,7 +139,7 @@ fn check_first_block_on_new_code(replay: &Replay) {
 #[test]
 fn one_session_replays_blocks_on_different_runtimes() {
     let load = |name| Artifact::load(&fixture(name)).unwrap();
-    let session = ReplaySession::new(None).unwrap();
+    let session = ReplaySession::new().unwrap();
     let westend = replay_with_session(load("westend-asset-hub"), None, &session).unwrap();
     let paseo = replay_with_session(load("paseo-asset-hub-contract"), None, &session).unwrap();
     let again = replay_with_session(load("westend-asset-hub"), None, &session).unwrap();
@@ -167,7 +167,7 @@ fn one_session_replays_blocks_on_different_runtimes() {
     let alone = replay_with_session(
         load("paseo-asset-hub-contract"),
         None,
-        &ReplaySession::new(None).unwrap(),
+        &ReplaySession::new().unwrap(),
     )
     .unwrap();
     assert_eq!(alone.artifact.metadata, paseo.artifact.metadata);
@@ -179,7 +179,7 @@ fn one_session_replays_blocks_on_different_runtimes() {
 #[ignore = "requires an archive Westend Asset Hub endpoint (FRAME_TRACE_WESTEND_AH_RPC)"]
 fn runtime_upgrade_enactment_and_next_block_live() {
     let rpc = polkadot_frame_trace_replay::rpc::Rpc::new(&westend_asset_hub_rpc()).unwrap();
-    let session = ReplaySession::new(None).unwrap();
+    let session = ReplaySession::new().unwrap();
     // In order, through one session, as `report` and `follow` do.
     let enactment = polkadot_frame_trace_replay::online_with_session(
         &rpc,
@@ -231,7 +231,7 @@ fn runtime_upgrade_enactment_and_next_block_live() {
         let alone = polkadot_frame_trace_replay::online_with_session(
             &rpc,
             &shared.block_number.to_string(),
-            &ReplaySession::new(None).unwrap(),
+            &ReplaySession::new().unwrap(),
         )
         .unwrap();
         assert_eq!(alone.runtime_code_hash, shared.runtime_code_hash);

@@ -131,7 +131,7 @@ Every block below passed the root check.
 
 | Chain | Live, from a public node | Offline, from a saved block |
 | --- | --- | --- |
-| Westend Asset Hub | Finalized and best blocks with `block`, `report` and `follow`; nightly | #18,558,320 |
+| Westend Asset Hub | Finalized blocks with `block`, `report` and `follow`; best blocks with `block`; nightly | #18,558,320 |
 | Westend Asset Hub runtime upgrade | #18,985,169 and #18,985,170, the first on the new code; nightly | |
 | Westend relay chain | The finalized block, nightly; #33,614,892 | |
 | Paseo Asset Hub | | #15,366,850, a contract call with child trie reads and writes |

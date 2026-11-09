@@ -64,10 +64,6 @@ For an old block, the node must still have that block's parent state.
 
 The public Parity endpoints, such as `wss://westend-asset-hub-rpc.polkadot.io`, served block 1,000,000 in the example above.
 
-## Make repeated runs faster
-
-- Add `--cache-dir <dir>` to keep a [disk cache](../reference/commands.md#disk-cache) of downloaded state and the compiled runtime between runs.
-
 Defaults and limits are in [Commands and flags](../reference/commands.md).
 
 ## Names and metadata

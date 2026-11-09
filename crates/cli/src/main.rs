@@ -50,9 +50,7 @@ enum Command {
     )]
     Block(BlockArgs),
     /// Trace new finalized blocks as they arrive.
-    #[command(
-        after_help = "Examples:\n  polkadot-frame-trace follow --rpc URL --otlp\n  polkadot-frame-trace follow --rpc URL --best"
-    )]
+    #[command(after_help = "Examples:\n  polkadot-frame-trace follow --rpc URL --otlp")]
     Follow(FollowArgs),
 }
 
@@ -186,12 +184,9 @@ fn emit(
     Ok(())
 }
 
-/// Follow finalized headers at replay speed; opt into reversible best heads with --best.
+/// Follow finalized headers at replay speed.
 #[derive(Args)]
 struct FollowArgs {
-    /// Follow best heads instead of finalized heads; report reorgs and reverted traces.
-    #[arg(long)]
-    best: bool,
     /// Node HTTP(S) or WS(S) safe RPC endpoint.
     #[arg(long, value_name = "URL")]
     rpc: String,
@@ -204,12 +199,6 @@ struct FollowArgs {
     /// Longest wait in seconds for one RPC response; each request gets four tries.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = source::rpc_timeout)]
     rpc_timeout: std::time::Duration,
-    /// Persistent proof-node and compiled Wasm cache directory.
-    #[arg(long, value_name = "DIR")]
-    cache_dir: Option<PathBuf>,
-    /// Disk cache limit in bytes; runtime code in use is kept.
-    #[arg(long, default_value_t = 1073741824)]
-    cache_max_bytes: u64,
 }
 
 fn follow(args: FollowArgs) -> Result<()> {

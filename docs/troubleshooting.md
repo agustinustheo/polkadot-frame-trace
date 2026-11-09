@@ -232,42 +232,9 @@ polkadot-frame-trace fetches, with proofs, every piece of state the block reads,
 A Westend Asset Hub block needed 64 rounds of requests in [Your first trace](getting-started/first-trace.md).
 To make later runs faster:
 
-- Add `--cache-dir <dir>`. Later blocks and runs use the state that earlier ones downloaded. In [Analyse many blocks](guides/analyse-many-blocks.md), RPC calls per block fell from 85 to about 40.
 - Use a node close to you, or your own node.
 
-Compiled runtimes are kept in `~/.cache/polkadot-frame-trace/wasm` even without `--cache-dir`.
-
-## Disk cache warnings
-
-These lines come from the [disk cache](reference/commands.md#disk-cache), from several runs:
-
-```text
-disk cache: removing /private/tmp/pft-docs/.polkadot-frame-trace-cache/nodes, left by an older polkadot-frame-trace; the disk cache is now in /private/tmp/pft-docs/.polkadot-frame-trace-cache/proof-nodes
-disk cache: kept /private/tmp/pft-docs/.polkadot-frame-trace-cache/nodes: it holds files polkadot-frame-trace did not write
-warning: disk cache: cannot write: Permission denied (os error 13)
-warning: disk cache: --cache-max-bytes 1048576 is less than the runtimes in use (26710016 bytes) plus 262144 bytes kept for downloaded state; the disk cache stays above the limit
-warning: disk cache: /private/tmp/pft-docs/stuck/proof-nodes/0000000000.seg: Permission denied (os error 13)
-warning: disk cache: old files in /private/tmp/pft-docs/stuck/proof-nodes cannot be deleted; not writing until they can
-warning: disk cache: /private/tmp/pft-docs/shared: group or others can write to it (mode 775); running without it
-warning: disk cache: /private/tmp/pft-docs/team: group or others can write to it (mode 775) and it is not sticky, so another user could replace the cache below it; running without it
-warning: disk cache: /private/tmp/pft-docs/blocked/proof-nodes: is not a directory; running without it
-warning: disk cache: /private/tmp/pft-docs/nowasm/wasm: is not a directory; runtimes are compiled again each run
-warning: disk cache: skipping /private/tmp/pft-docs/ro/proof-nodes/0000000000.seg: Permission denied (os error 13)
-```
-
-None of them change a trace. At worst, blocks ask the node again for state, and runs compile the runtime again.
-
-| Message starts with | What it means | What to do |
-| --- | --- | --- |
-| `disk cache: removing <dir>/nodes, left by an older polkadot-frame-trace` | An older version kept one file per piece of state in `nodes`. polkadot-frame-trace deletes the files it wrote there in the background. If it stops first, the next run continues. | Nothing. |
-| `disk cache: kept <dir>/nodes: it holds files polkadot-frame-trace did not write` | Something else is in that folder, so it stays. | Look at what is left in `<dir>/nodes` and delete it if you do not need it. |
-| `warning: disk cache: cannot write: …` | The disk is full or the directory is read-only. Logged once per run. | Free disk space, or point `--cache-dir` at a directory you can write to. |
-| `warning: disk cache: --cache-max-bytes <N> is less than the runtimes in use …` | The runtime in use plus the space kept for state is more than the limit. polkadot-frame-trace keeps both. | Raise `--cache-max-bytes` above the sum in the message. A compiled Westend Asset Hub runtime is about 26 MB. |
-| `warning: disk cache: old files in <dir> cannot be deleted; not writing until they can` | The disk cache is full and its oldest file cannot be deleted. It stops writing until the file is gone, and tries again before each write. | Give your user permission to delete files in that folder. |
-| `warning: disk cache: <dir>: group or others can write to it …; running without it` | The directory is not private. Compiled runtimes are native code that polkadot-frame-trace runs, so it does not use the directory. A directory of another user gets `owned by user <uid>, not by this user`. The `not sticky` form names a parent: anyone who can write there may replace the cache. | Run `chmod go-w <dir>` on the directory named, or `chmod +t` on a shared parent, or use a directory only you can write to. |
-| `warning: disk cache: <dir>/proof-nodes: …; running without it` | The folder for downloaded state cannot be created or opened, for example a file has that name. A symlink there gets `is a symlink`. | Remove what is in the way, or use another `--cache-dir`. |
-| `warning: disk cache: <dir>/wasm: …; runtimes are compiled again each run` | The folder for compiled runtimes cannot be created, or is a symlink. | Remove what is in the way, or use another `--cache-dir`. |
-| `warning: disk cache: skipping <file>: …` | One file cannot be opened. polkadot-frame-trace leaves it alone and does not count it in `--cache-max-bytes`. | Give your user read and write access to the file, or delete it. |
+Compiled runtimes are kept in `~/.cache/polkadot-frame-trace/wasm`.
 
 ## `failed to lookup address information`
 
@@ -291,7 +258,7 @@ Usage: polkadot-frame-trace block --block <NUMBER|HASH|best|finalized> <--rpc <U
 ```
 
 Two flags do not work together, so polkadot-frame-trace refuses to run. It does not ignore one of them.
-For example, `--block` applies only to `--rpc`, and `report --cache-dir` only to `report --rpc`.
+For example, `--block` applies only to `--rpc`.
 The exit code is 2.
 
 Remove the flag that does not apply to your source.

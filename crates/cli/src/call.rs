@@ -57,12 +57,6 @@ pub struct CallArgs {
     /// Longest wait in seconds for one RPC response; each request gets four tries.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = super::source::rpc_timeout, requires = "rpc", conflicts_with = "offline")]
     rpc_timeout: Duration,
-    /// Persistent authenticated proof-node and compiled Wasm cache directory.
-    #[arg(long, value_name = "DIR")]
-    cache_dir: Option<PathBuf>,
-    /// Disk cache limit in bytes; runtime code in use is kept.
-    #[arg(long, default_value_t = 1073741824)]
-    cache_max_bytes: u64,
     /// Execute this Wasm instead of the authenticated :code, for example the same runtime
     /// built with `with-tracing`. Bypasses the code-hash check. Labelled on stderr, in JSON
     /// and in OTLP. Warns when its runtime version differs from the chain's. Cannot be
@@ -84,9 +78,7 @@ pub fn run(args: CallArgs) -> Result<()> {
         .map(|s| serde_json::from_str::<serde_json::Value>(s).context("--args: malformed JSON"))
         .transpose()?;
     let runtime_override = super::source::read_runtime_override(args.runtime_override.as_deref())?;
-    let session =
-        ReplaySession::with_cache_max_bytes(args.cache_dir.as_deref(), args.cache_max_bytes)?
-            .with_runtime_override(runtime_override);
+    let session = ReplaySession::new()?.with_runtime_override(runtime_override);
     let (artifact, rpc) = if let Some(dir) = &args.offline {
         (Artifact::load(dir)?, None)
     } else {

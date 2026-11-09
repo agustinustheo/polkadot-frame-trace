@@ -191,7 +191,7 @@ fn replay_inner(
         .ok_or_else(|| Error::Invalid("missing call".into()))?;
     call.result = Some(hex0(&output));
     call.oracle = oracle_output.as_ref().map(|bytes| hex0(bytes));
-    persist_export(&db, &mut artifact)?;
+    persist_export(&db, &mut artifact);
     Ok(CallReplay {
         capture,
         block_number: u64::from(*state.number()),
@@ -219,7 +219,8 @@ pub fn authenticate_metadata(
         let (wasm, heap) = runtime_code(&db, *state.state_root())?;
         let (wasm, _) = crate::select_runtime(session, wasm);
         metadata::load(artifact, &db, &wasm, heap, session, &state)?;
-        persist_export(&db, artifact)
+        persist_export(&db, artifact);
+        Ok(())
     })
     .map_err(|e| crate::override_hint(session, e))
 }

@@ -4,7 +4,6 @@ mod log;
 pub use log::set_log_hook;
 mod artifact;
 pub mod call;
-mod disk;
 mod metadata;
 mod nodes;
 pub use nodes::MemoryCacheStats;
@@ -473,7 +472,7 @@ pub fn replay_with_session(
 fn with_maintenance<T>(session: &ReplaySession, run: impl FnOnce() -> Result<T>) -> Result<T> {
     let result = run();
     // The cache is disposable: a cleanup error never fails the replay it follows.
-    if let Err(cache_error) = session.prune_disk_cache() {
+    if let Err(cache_error) = session.prune_runtime_cache() {
         note!("warning: cache cleanup: {cache_error}");
     }
     result
@@ -550,9 +549,8 @@ fn replay_inner(
         })?;
     let rpc_count = rpc.as_ref().map_or(0, Rpc::count);
     let capture = captured(&capture, artifact.block_hash, parent.hash());
-    // `execute` fails on a state root mismatch, so only verified blocks reach the disk cache
-    // and the hints for the next replay.
-    persist_export(&db, &mut artifact)?;
+    // `execute` fails on a state root mismatch, so only verified blocks teach the next replay.
+    persist_export(&db, &mut artifact);
     Ok(Replay {
         capture,
         block_number: number,
@@ -732,10 +730,9 @@ fn open_db(
     Ok(db)
 }
 
-fn persist_export(db: &ProofDb, artifact: &mut Artifact) -> Result<()> {
-    db.persist()?;
+fn persist_export(db: &ProofDb, artifact: &mut Artifact) {
+    db.remember_paths();
     artifact.proof_nodes = db.export();
-    Ok(())
 }
 
 fn measured_run<T>(
