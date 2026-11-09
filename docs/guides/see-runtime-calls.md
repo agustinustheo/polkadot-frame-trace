@@ -46,7 +46,7 @@ Build it from the same source and version as the runtime on chain.
 ## 3. Replay a real block with it
 
 `--runtime-override <wasm>` runs your Wasm instead of the chain's runtime.
-It works with `block`, `summary` and `call`.
+It works with `block` and `call`.
 polkadot-frame-trace still fetches and checks all state, including the chain's runtime code, then runs your file instead.
 
 For your own chain:
@@ -115,7 +115,7 @@ Every output says that another runtime ran:
 - stderr names the file and both code hashes before anything runs;
 - the Jaeger root span name ends in `[runtime override]` and has `frame.runtime.override = true`;
 - JSON has a `runtime_override` object, see [JSON output](../reference/json.md);
-- `summary --from-json` and `report` start with `RUNTIME OVERRIDE: 1 of 1 block(s) used a runtime override`.
+- `block --from-json` and `report` start with `RUNTIME OVERRIDE: 1 of 1 block(s) used a runtime override`.
 
 ## Limits
 

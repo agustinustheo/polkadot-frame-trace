@@ -68,18 +68,18 @@ Raw keys and values can identify accounts. Keys are on by default (needed for de
 ```sh
 polkadot-frame-trace block   --rpc wss://… --block <number|hash> [--otlp http://127.0.0.1:4318] [--json out.json] [--save <artifact-dir>]
 polkadot-frame-trace block   --offline <artifact-dir> [--otlp …]          # replay a saved artifact, no network
-polkadot-frame-trace call    --rpc wss://… [--at finalized] --method AccountNonceApi_account_nonce --data <hex> [--oracle] [--save <artifact-dir>]
-polkadot-frame-trace call    --offline <artifact-dir> [--summary] [--otlp …]
+polkadot-frame-trace call    --rpc wss://… [--at finalized] --method AccountNonceApi_account_nonce --data <hex> [--check-state-call] [--save <artifact-dir>]
+polkadot-frame-trace call    --offline <artifact-dir> [--otlp …]
 polkadot-frame-trace follow  --rpc wss://… [--otlp …]                    # trace each new block
-polkadot-frame-trace summary --rpc … --block …                            # terminal tables: top items, duplicate reads, per extrinsic
-polkadot-frame-trace summary --from-json block.json                       # no replay
+polkadot-frame-trace block --rpc … --block …                            # terminal tables: top items, duplicate reads, per extrinsic
+polkadot-frame-trace block --from-json block.json                       # no replay
 polkadot-frame-trace report  blocks/*.json --json report.json               # aggregate saved traces
 polkadot-frame-trace report  --rpc wss://… --last 20                        # finalized range, shared caches
 ```
 
 ## Phases
 
-1. **Replay exporter (now).** Self-replay source, `block`, `follow`, `summary`, offline artifacts. Tested offline against saved artifacts from a local People chain and public Westend Asset Hub.
+1. **Replay exporter (now).** Self-replay source, `block`, `follow`, offline artifacts. Tested offline against saved artifacts from a local People chain and public Westend Asset Hub.
 2. **Runtime spans.** Nest storage ops under dispatch and hook spans when the runtime has `with-tracing`; build such runtimes on demand for debugging.
 3. **State queries.** `call` executes runtime APIs at a selected state, using authenticated proofs, measured storage/runtime spans, metadata argument/result decoding, optional safe `state_call` comparison, and offline artifacts. Calls have no block root assertion. A standalone storage query/trie-depth view is deferred; see README.
 4. **Constants.** Plain `#[pallet::constant]` values are compiled into the runtime and never touch storage, so a replay can't see them. Only `parameter_types! { storage … }` and dynamic parameters show up, as storage.

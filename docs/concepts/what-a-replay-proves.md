@@ -86,8 +86,3 @@ Every value it reads from chain state is still checked by proof against that blo
 The output says `root check: NOT APPLICABLE (runtime API call)`.
 `--check-state-call` compares the result with the node's own `state_call`.
 See [Trace a runtime API call](../guides/trace-a-runtime-api-call.md).
-
-## Recorded traces have no root check
-
-`--from-file` reads a response saved from the node's `state_traceBlock` method.
-polkadot-frame-trace does not replay that block, so there is no root check, no origin and no proof bytes.

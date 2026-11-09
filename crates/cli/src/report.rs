@@ -9,40 +9,34 @@ use std::{
 };
 
 #[derive(Args)]
-#[command(group(ArgGroup::new("source").required(true).multiple(true).args(["rpc", "files", "from_json"])))]
+#[command(group(ArgGroup::new("source").required(true).multiple(true).args(["rpc", "files"])))]
 pub struct ReportArgs {
     /// Saved block --json files.
     #[arg(value_name = "BLOCK.json", conflicts_with = "rpc")]
     files: Vec<PathBuf>,
-    /// Additional saved block --json files.
-    #[arg(long, value_name = "BLOCK.json", conflicts_with = "rpc")]
-    from_json: Vec<PathBuf>,
     /// Replay a range of finalized blocks from a node.
-    #[arg(long, value_name = "URL", conflicts_with_all=["files", "from_json"])]
+    #[arg(long, value_name = "URL", conflicts_with_all=["files"])]
     rpc: Option<String>,
     /// First block number in the inclusive finalized range (non-genesis).
-    #[arg(long, requires = "rpc", conflicts_with_all = ["last", "files", "from_json"])]
+    #[arg(long, requires = "rpc", conflicts_with_all = ["last", "files"])]
     from: Option<u64>,
     /// Last block number in the inclusive range; cannot exceed finalized head.
-    #[arg(long, requires = "from", conflicts_with_all = ["last", "files", "from_json"])]
+    #[arg(long, requires = "from", conflicts_with_all = ["last", "files"])]
     to: Option<u64>,
     /// Most recent K blocks anchored to one finalized head.
-    #[arg(long, requires="rpc", conflicts_with_all=["from", "to", "files", "from_json"], value_parser=clap::value_parser!(u32).range(1..=10000))]
+    #[arg(long, requires="rpc", conflicts_with_all=["from", "to", "files"], value_parser=clap::value_parser!(u32).range(1..=10000))]
     last: Option<u32>,
-    /// Concurrent block replays (--proof-concurrency limits their RPC requests).
-    #[arg(long, default_value_t=2, requires = "rpc", conflicts_with_all = ["files", "from_json"], value_parser=clap::value_parser!(u8).range(1..=4))]
-    concurrency: u8,
-    /// Maximum concurrent RPC requests across all blocks (1–64; up to 32 proof keys per request).
-    #[arg(long, default_value_t=8, requires = "rpc", conflicts_with_all = ["files", "from_json"], value_parser=clap::value_parser!(u8).range(1..=64))]
-    proof_concurrency: u8,
+    /// Concurrent block replays.
+    #[arg(long, default_value_t=2, requires = "rpc", conflicts_with_all = ["files"], value_parser=clap::value_parser!(u8).range(1..=4))]
+    workers: u8,
     /// Longest wait in seconds for one RPC response; each request gets four tries.
-    #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = crate::source::rpc_timeout, requires = "rpc", conflicts_with_all = ["files", "from_json"])]
+    #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = crate::source::rpc_timeout, requires = "rpc", conflicts_with_all = ["files"])]
     rpc_timeout: std::time::Duration,
     /// Persist authenticated proof nodes and compiled Wasm in this directory.
-    #[arg(long, requires = "rpc", conflicts_with_all = ["files", "from_json"])]
+    #[arg(long, requires = "rpc", conflicts_with_all = ["files"])]
     cache_dir: Option<PathBuf>,
     /// Combined proof-node/compiled-Wasm disk cache limit in bytes (default 1 GiB).
-    #[arg(long, default_value_t = 1073741824, requires = "rpc", conflicts_with_all = ["files", "from_json"])]
+    #[arg(long, default_value_t = 1073741824, requires = "rpc", conflicts_with_all = ["files"])]
     cache_max_bytes: u64,
     /// Maximum rows in each ranked item, extrinsic and hook table (JSON is complete).
     #[arg(long, default_value_t = 15)]
@@ -95,7 +89,7 @@ pub fn read_trace(path: &Path) -> Result<AnnotatedBlock> {
     ))
     .with_context(|| format!("parsing block JSON {}", path.display()))?;
     ensure!(
-        (1..=2).contains(&block.schema_version),
+        block.schema_version == 2,
         "unsupported block JSON schema version {} in {}",
         block.schema_version,
         path.display()
@@ -114,7 +108,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
         use polkadot_frame_trace_replay::ReplaySession;
         let rpc = crate::source::rpc(
             url,
-            args.proof_concurrency,
+            crate::source::PROOF_CONCURRENCY,
             args.rpc_timeout,
             Default::default(),
         )?;
@@ -142,7 +136,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
         validate_range(from, to, finalized)?;
         // Finalized number lookups are immutable. Resolve each hash once before replay.
         let numbers: Vec<_> = (from..=to).collect();
-        for chunk in numbers.chunks(args.concurrency as usize) {
+        for chunk in numbers.chunks(args.workers as usize) {
             std::thread::scope(|scope| {
                 let (sender, receiver) = std::sync::mpsc::sync_channel(chunk.len());
                 for &number in chunk {
@@ -183,7 +177,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
             });
         }
     } else {
-        for path in args.files.iter().chain(&args.from_json) {
+        for path in &args.files {
             accumulator.record(path.display().to_string(), read_trace(path));
         }
     }
@@ -972,54 +966,6 @@ mod tests {
         assert_eq!(r.phases["post_inherents"].tally.ops, 2);
         assert_eq!(r.phases["signed_extrinsics"].tally.ops, expected * 2);
     }
-    fn legacy() -> AnnotatedBlock {
-        serde_json::from_str(include_str!("../../../fixtures/model/pre-e86f740.json")).unwrap()
-    }
-    #[test]
-    fn legacy_json_keeps_missing_proof_and_origins_unrecorded() {
-        let block = legacy();
-        assert_eq!(block.schema_version, 1);
-        assert!(
-            block
-                .all_phases()
-                .flat_map(|p| &p.ops)
-                .all(|op| op.origin.is_none() && op.proof_bytes_added.is_none())
-        );
-        let report = aggregate(std::slice::from_ref(&block));
-        assert_eq!(report.totals.proof_ops_observed, 0);
-        assert_eq!(report.totals.reads, report.totals.origin_unknown);
-        assert!(report.extrinsics.values().all(|e| e.proof_bytes.is_none()));
-        let text = render_sorted(&report, 1, SortKey::Proof);
-        assert!(
-            text.contains("proof n/a") && !text.contains("n/a B"),
-            "{text}"
-        );
-        let summary = crate::summary::render(&block, 1);
-        assert!(
-            summary.contains("n/a") && !summary.contains("n/a B"),
-            "{summary}"
-        );
-        // Once operations carry proof data, the part not assigned to them is the rest of the
-        // execution proof.
-        let mut value = serde_json::to_value(&block).unwrap();
-        for phase in value["phases"].as_array_mut().unwrap() {
-            for op in phase["ops"].as_array_mut().unwrap() {
-                op["proof_bytes_added"] = serde_json::json!(2);
-            }
-        }
-        value["execution"] = serde_json::json!({"root_check":true,"proof_bytes":100,
-            "rpc_calls":0,"measured_rpc_calls":0,"proof_rounds":0});
-        let block: AnnotatedBlock = serde_json::from_value(value).unwrap();
-        let r = aggregate(std::slice::from_ref(&block));
-        let attributed = r.totals.proof_bytes;
-        assert_eq!(r.unattributed_proof_bytes, Some(100 - attributed));
-        assert_eq!(r.over_attributed_proof_bytes, Some(0));
-        let text = render_sorted(&r, 1, SortKey::Proof);
-        assert!(
-            text.contains(&format!("proof {attributed} B (partial)")),
-            "{text}"
-        );
-    }
     #[test]
     fn report_ranges_are_inclusive_finalized_non_genesis_and_bounded() {
         for (from, to, head) in [
@@ -1036,7 +982,7 @@ mod tests {
     }
     #[test]
     fn crafted_json_max_durations_and_tallies_saturate() {
-        let mut value = serde_json::to_value(legacy()).unwrap();
+        let mut value = serde_json::to_value(trace()).unwrap();
         value["runtime_spans"] = serde_json::json!([
             {"id":1,"parent_id":null,"name":"on_initialize: Huge","target":"pallet_huge","wasm":true,
              "fields":{},"start_ns":0,"end_ns":u64::MAX,"duration_ns":u64::MAX,"enters":1,"proof_start_bytes":0,"proof_end_bytes":0},
@@ -1081,7 +1027,7 @@ mod tests {
     }
     #[test]
     fn over_attribution_is_reported_instead_of_clamped_to_zero() {
-        let mut value = serde_json::to_value(legacy()).unwrap();
+        let mut value = serde_json::to_value(trace()).unwrap();
         for phase in value["phases"].as_array_mut().unwrap() {
             for op in phase["ops"].as_array_mut().unwrap() {
                 op["proof_bytes_added"] = serde_json::json!(10);
@@ -1113,7 +1059,7 @@ mod tests {
     }
     #[test]
     fn sort_key_ranks_items_and_hooks_as_well_as_extrinsics() {
-        let mut value = serde_json::to_value(legacy()).unwrap();
+        let mut value = serde_json::to_value(trace()).unwrap();
         value["runtime_spans"] = serde_json::json!([
             {"id":1,"parent_id":null,"name":"on_initialize: Few","target":"pallet_few","wasm":true,
              "fields":{},"start_ns":0,"end_ns":1,"duration_ns":1,"enters":1,"proof_start_bytes":0,"proof_end_bytes":0},
@@ -1193,7 +1139,7 @@ mod tests {
             "{by_time}"
         );
         // Extrinsics rank by the same key; phases keep execution order.
-        let mut block = legacy();
+        let mut block = trace();
         let phases: Vec<_> = block
             .phases
             .iter_mut()

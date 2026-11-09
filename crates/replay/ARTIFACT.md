@@ -84,8 +84,7 @@ only checks equality to those bytes. No network request is made.
 Calls do **not** assert a new block root. They authenticate reads relative to the
 selected header's state root. Metadata is re-executed locally (V16, V15, legacy V14)
 for names and argument/result types. The code-hash cache retains proof dependencies
-per state root. Only explicit `--rpc-metadata-fallback` allows unauthenticated RPC
-or stored metadata when local execution is impossible.
+per state root. When local metadata execution is unavailable, names and results stay hex.
 
 Follow predictions retain up to 4,096 top-trie keys/miss paths per successful
 replay, across the last three completions (the combined per-replay prediction set is also

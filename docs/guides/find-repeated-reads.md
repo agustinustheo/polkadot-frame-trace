@@ -14,7 +14,7 @@ Run this from the `polkadot-frame-trace` directory.
 `--top 5` keeps five rows per phase.
 
 ```sh
-polkadot-frame-trace summary --offline fixtures/replay/people-traced --top 5
+polkadot-frame-trace block --offline fixtures/replay/people-traced --top 5
 ```
 
 Against a live chain, use `--rpc <url> --block <block>` instead of `--offline`.

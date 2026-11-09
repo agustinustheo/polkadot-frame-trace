@@ -86,7 +86,7 @@ These log lines show that replays fall behind:
 | `skipped block <hash>: retry expired behind tip` | The same, for a block that was waiting to be retried. |
 
 To go faster, keep `--cache-dir` and raise `--workers`.
-On a fast connection, raise `--proof-concurrency`. A node close to you also helps.
+A node close to you also helps.
 The [reference](../reference/commands.md#follow) lists the limits.
 
 ## 4. Follow the newest blocks with `--best`

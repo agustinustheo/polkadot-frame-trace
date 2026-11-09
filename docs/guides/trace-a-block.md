@@ -27,11 +27,10 @@ replay #1000000: loading runtime and preparing state
 root check: PASS; RPC calls: 17 (timed replay: 0); execution proof: 9840 bytes
 fetching state #1000000: 13 proof request rounds; 17 RPC calls
 state root: computed 0x614e27580d5a379f5a7a57dd7598df672545859d85d387ae5e5ab7ebfcd9b608; header 0x614e27580d5a379f5a7a57dd7598df672545859d85d387ae5e5ab7ebfcd9b608
-block 0x849423aff4eae359240b694f1dc46d108522393ffd1cb4cb02401cfb95b5c58b: 4 phases, 143 storage operations (68 reads, 73 writes, 8 duplicate reads). Use --otlp or --json to export it.
 ```
 
-Without an output flag, polkadot-frame-trace prints this one-line count.
-Add an output to see the trace:
+Without `--otlp` or `--json`, polkadot-frame-trace prints storage summary tables.
+Add an output to export the trace:
 
 | Flag | Output |
 | --- | --- |
@@ -39,10 +38,10 @@ Add an output to see the trace:
 | `--json <file>` | Write the whole trace as JSON. `-` writes to stdout. See [JSON output](../reference/json.md). |
 | `--save <dir>` | Keep everything needed to replay the block later with no network. See [Save a block and replay it offline](save-and-replay.md). |
 
-To see tables in the terminal instead, use `summary` with the same source flags:
+To see tables in the terminal instead, run `block` without `--otlp` or `--json`:
 
 ```sh
-polkadot-frame-trace summary --rpc wss://westend-asset-hub-rpc.polkadot.io --block finalized
+polkadot-frame-trace block --rpc wss://westend-asset-hub-rpc.polkadot.io --block finalized
 ```
 
 [Find the heaviest storage items](find-heaviest-items.md) explains its tables.
@@ -68,7 +67,6 @@ The public Parity endpoints, such as `wss://westend-asset-hub-rpc.polkadot.io`, 
 ## Make repeated runs faster
 
 - Add `--cache-dir <dir>` to keep a [disk cache](../reference/commands.md#disk-cache) of downloaded state and the compiled runtime between runs.
-- Raise `--proof-concurrency` on a fast connection to send more requests at once.
 
 Defaults and limits are in [Commands and flags](../reference/commands.md).
 
@@ -78,5 +76,3 @@ polkadot-frame-trace decodes keys such as `System::Account(5Grw…)` using the r
 It gets the metadata by running the runtime's metadata API on your machine, checked like any other state.
 Runtimes need metadata V14, V15 or V16, see [What polkadot-frame-trace supports](../reference/support.md).
 If that fails, polkadot-frame-trace prints a notice and shows raw keys and hex values.
-`--unauthenticated-metadata` uses the node's `state_getMetadata` instead.
-That metadata is not checked, and the output says so.

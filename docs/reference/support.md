@@ -30,7 +30,6 @@ polkadot-frame-trace sends only these RPC methods:
 | `state_getRuntimeVersion` | The runtime version at a block. |
 | `state_getReadProof` | Every piece of state the replay reads, checked against the state root. |
 | `state_getChildReadProof` | State in child tries. |
-| `state_getMetadata` | Only with `--unauthenticated-metadata`, when the runtime's own metadata cannot be loaded. |
 | `state_call` | Only with `call --check-state-call`. |
 
 ## Host functions
@@ -56,7 +55,7 @@ See [Troubleshooting](../troubleshooting.md#the-runtime-needs-host-functions-pol
 | Westend Asset Hub runtime upgrade | A nightly test replays the upgrade block #18,985,169 and the next block #18,985,170, the first on the new code, from the public endpoint. |
 | Westend relay chain | A nightly test replays the finalized block from `wss://westend-rpc.polkadot.io`, with the parachain inherent `ParaInherent.enter`. Block #33,614,892 also passed. |
 | Paseo Asset Hub | Block #15,366,850 is a saved block replayed offline. It holds a smart-contract call that reads and writes the contract's child trie. |
-| Paseo People Next | Public endpoint `wss://paseo-people-next-system-rpc.polkadot.io`, 20 blocks with `block` and `summary`. Each passed the root check. |
+| Paseo People Next | Public endpoint `wss://paseo-people-next-system-rpc.polkadot.io`, 20 blocks with `block`. Each passed the root check. |
 | A local [People chain](glossary.md#people-chain) | Saved blocks replayed offline. |
 
 Every block in this table passed the root check.

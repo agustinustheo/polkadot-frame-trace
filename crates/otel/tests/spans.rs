@@ -489,9 +489,7 @@ fn traced_batch_keeps_named_extrinsic_runtime_and_ops_in_one_tree() {
         )
         .unwrap(),
         None,
-        &polkadot_frame_trace_replay::ReplaySession::new(None)
-            .unwrap()
-            .with_rpc_metadata_fallback(true),
+        &polkadot_frame_trace_replay::ReplaySession::new(None).unwrap(),
     )
     .unwrap();
     let metadata = Metadata::from_hex(&replay.artifact.metadata).unwrap();

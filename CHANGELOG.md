@@ -12,9 +12,8 @@ The project is named polkadot-frame-trace: the command, the crates, the OTLP ser
 
 ### Added
 
-- `block`: replay one block from a node that serves `state_getReadProof` and still has the block's parent state. With `--otlp` or `--json`, it exports every storage read and write, in order, with decoded names. Without them, it prints totals.
+- `block`: replay one block from a node that serves `state_getReadProof` and still has the block's parent state. With `--otlp` or `--json`, it exports every storage read and write, in order, with decoded names. Without them, it prints storage use per phase and per item, the heaviest items, and repeated reads.
 - `call`: replay a runtime API call and show its storage use and result. `--check-state-call` compares the result with the node's.
-- `summary`: storage use per phase and per storage item, the heaviest items, and repeated reads.
 - `report`: compare storage use across saved blocks or a range of up to 10,000 finalized blocks.
 - `follow`: trace each new finalized block as it arrives, or each new best block with `--best`.
 - Root check: every block replay confirms it reached the same state root as the chain.
@@ -32,7 +31,5 @@ The project is named polkadot-frame-trace: the command, the crates, the OTLP ser
 - A warning when `--rpc` or `--otlp` is plain `ws://` or `http://` to another machine.
 - A private disk cache: polkadot-frame-trace creates the `--cache-dir` directory readable by you alone, and runs without one that another user owns or can write. Without both `XDG_CACHE_HOME` and `HOME`, compiled runtimes go to a per-user folder in the temporary directory.
 - URL redaction: output and errors show `--rpc` and `--otlp` URLs as scheme, host and port only, so credentials and API keys stay out of logs. Error text from the node or the OTLP receiver is cut to 512 characters.
-
-Nightly users: delete `~/.cache/frame-trace` and `<cache-dir>/nodes`.
 
 [0.1.0]: https://github.com/agustinustheo/polkadot-frame-trace/releases/tag/v0.1.0

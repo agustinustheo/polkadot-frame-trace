@@ -20,7 +20,7 @@ Each operation gets the bytes that it added to the proof.
 - If work between storage calls makes the proof larger, the next storage call gets those bytes.
 
 Normally, the proof bytes of all operations add up to the execution proof. For block #4 they total 6,586 bytes.
-`summary` prints the check:
+`block` prints the check:
 
 ```text
 Duplicate reads 203 = cache 177, trie (already in proof) 26, trie (new) 0, unknown 0; proof 6586 B (518 operations with proof data; 0 B not assigned to operations)
@@ -35,7 +35,7 @@ Duplicate reads 203 = cache 177, trie (already in proof) 26, trie (new) 0, unkno
 | --- | --- | --- |
 | Jaeger, on each storage operation | `frame.storage.proof_bytes` | bytes |
 | Jaeger, on each `apply_extrinsic` runtime span | `frame.proof.marginal_bytes` | bytes the proof grew during that extrinsic |
-| `summary` and `report` tables | `proof bytes` column | bytes |
+| `block` and `report` tables | `proof bytes` column | bytes |
 | JSON | `proof_bytes_added` on each operation, `execution.proof_bytes` for the block | bytes |
 
 ## What proof bytes do not mean

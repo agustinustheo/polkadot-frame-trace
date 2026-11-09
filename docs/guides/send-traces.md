@@ -98,12 +98,12 @@ polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.
 ```
 
 `--json -` writes to stdout.
-With `call --summary --json -`, the tables go to stderr so stdout stays valid JSON.
+With `call --json -`, the tables go to stderr so stdout stays valid JSON.
 
 Use JSON to:
 
 - keep a block's trace without a trace viewer;
-- read it again with `summary --from-json block.json`;
+- read it again with `block --from-json block.json`;
 - add up many blocks with `report block-1.json block-2.json`;
 - load it into your own scripts.
 

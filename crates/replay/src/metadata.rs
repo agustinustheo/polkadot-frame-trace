@@ -164,16 +164,6 @@ pub(crate) fn load(
         {
             return Err(error);
         }
-        Err(error) if session.rpc_metadata_fallback => {
-            note!(
-                "warning: local metadata unavailable ({}); UNAUTHENTICATED METADATA (unverified names from the node or saved replay)",
-                unavailable_reason(&error)
-            );
-            artifact.metadata = match db.rpc() {
-                Some(rpc) => metadata_result(rpc.call("state_getMetadata", json!([state.hash()])))?,
-                None => artifact.metadata.clone(),
-            };
-        }
         Err(error) => {
             note!(
                 "notice: local metadata unavailable ({}); using unnamed storage and hex results",

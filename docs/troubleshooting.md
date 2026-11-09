@@ -184,18 +184,7 @@ polkadot-frame-trace printed `exported <N> spans`, but Jaeger shows nothing.
 - Pick the service `polkadot-frame-trace` and click **Find Traces**.
 - Widen **Lookback**. Traces carry the time you ran polkadot-frame-trace.
 - Check that polkadot-frame-trace and the page you opened use the same Jaeger. Jaeger's default in-memory storage loses traces on restart.
-- Without `--otlp`, polkadot-frame-trace sends nothing to Jaeger. With neither `--otlp` nor `--json`, `block` ends with `Use --otlp or --json to export it.`
-
-## `unsupported metadata version V13 (need V14, V15 or V16)`
-
-```text
-Error: reading metadata from /tmp/ftdocs/v13.scale: unsupported metadata version V13 (need V14, V15 or V16)
-```
-
-polkadot-frame-trace decodes names with metadata V14, V15 or V16.
-You see this error when you pass an older metadata file with `--metadata`.
-Use metadata V14, V15 or V16.
-For a replayed block, polkadot-frame-trace prints the notice in the next section instead, and continues without names.
+- Without `--otlp`, polkadot-frame-trace sends nothing to Jaeger. With neither `--otlp` nor `--json`, `block` prints storage summary tables.
 
 ## `notice: local metadata unavailable (…); using unnamed storage and hex results`
 
@@ -207,8 +196,6 @@ polkadot-frame-trace could not run the runtime's metadata API for this state.
 The trace is still complete and checked.
 Keys show as `<unknown>` or raw hex, and call results as hex.
 
-For a live block, `--unauthenticated-metadata` uses the node's metadata.
-It is not checked, and the output says so.
 For a call, use `--data` instead of `--args`.
 
 ## `overall request deadline exceeded`
@@ -246,7 +233,6 @@ A Westend Asset Hub block needed 64 rounds of requests in [Your first trace](get
 To make later runs faster:
 
 - Add `--cache-dir <dir>`. Later blocks and runs use the state that earlier ones downloaded. In [Analyse many blocks](guides/analyse-many-blocks.md), RPC calls per block fell from 85 to about 40.
-- Raise `--proof-concurrency` on a fast connection.
 - Use a node close to you, or your own node.
 
 Compiled runtimes are kept in `~/.cache/polkadot-frame-trace/wasm` even without `--cache-dir`.
@@ -299,13 +285,13 @@ Check the URL for typos and check your network.
 ## `the argument '…' cannot be used with '…'`
 
 ```text
-error: the argument '--rpc <URL>' cannot be used with '--metadata <FILE>'
+error: the argument '--rpc <URL>' cannot be used with '--offline <DIR>'
 
-Usage: polkadot-frame-trace block --block <NUMBER|HASH|best|finalized> <--rpc <URL>|--offline <DIR>|--from-file <FILE>|--from-json <FILE>>
+Usage: polkadot-frame-trace block --block <NUMBER|HASH|best|finalized> <--rpc <URL>|--offline <DIR>|--from-json <FILE>>
 ```
 
 Two flags do not work together, so polkadot-frame-trace refuses to run. It does not ignore one of them.
-For example, `--metadata` applies only to `--from-file`, `--block` only to `--rpc`, and `report --cache-dir` only to `report --rpc`.
+For example, `--block` applies only to `--rpc`, and `report --cache-dir` only to `report --rpc`.
 The exit code is 2.
 
 Remove the flag that does not apply to your source.

@@ -35,7 +35,7 @@ Sentry's docs are the model. The README shows the result. The first guide ends w
    Use plain verbs (run, keep, remove, fail, pass) and no hype words such as "robust", "seamless" or "leverage".
    Bullets only for real lists, tables only for numbers or lookups. No bold-label stacks.
 6. **No internal names.** Never write E1, E2, oracle, discovery run, measured run, ProofDb, overlay, backend_warm, synthetic, schema internals, crate names, or commit hashes in user pages. Use the plain words from rule 3. Raw JSON values (`overlay`, `backend_cold`) appear only in the JSON reference.
-7. **Defaults and limits live in reference tables,** not in prose. A guide says "raise `--proof-concurrency` on a fast connection" and links to the table.
+7. **Defaults and limits live in reference tables,** not in prose. A guide says "raise `--rpc-timeout` for a slow node" and links to the table.
 8. **Hide mechanisms the reader doesn't act on.** How proofs are fetched, predicted and cached belongs in one concept page at most.
 9. **Commands are copyable.** Say where to run them. Use `polkadot-frame-trace` as the command name; Getting started shows once how to install it. Placeholders look like `<block-number>`.
 10. **At most one warning per page,** as a blockquote starting with **Warning:**, next to the step it applies to.

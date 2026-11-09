@@ -5,21 +5,19 @@ This page lists every command and flag, taken from `polkadot-frame-trace <comman
 | Command | Does |
 | --- | --- |
 | [`block`](#block) | Trace storage use in one block and export it to JSON or a trace viewer. |
-| [`summary`](#summary) | Show storage use by block phase and storage item. |
 | [`call`](#call) | Trace storage use and the result of a runtime API call. |
 | [`report`](#report) | Compare storage use across saved blocks or a range of finalized blocks. |
 | [`follow`](#follow) | Trace new finalized blocks as they arrive. |
 
 ## Sources
 
-`block` and `summary` need exactly one source:
+`block` needs exactly one source:
 
 | Flag | Source |
 | --- | --- |
 | `--rpc <URL>` with `--block <NUMBER\|HASH\|best\|finalized>` | Replay a block from a node. |
 | `--offline <DIR>` | Replay a block saved with `--save`, with no network. |
 | `--from-json <FILE>` | Read saved `block --json` output without replaying. |
-| `--from-file <FILE>` | Read a recorded `state_traceBlock` response. No replay, no root check, no origins, no proof bytes, made-up timings. |
 
 ## block
 
@@ -34,23 +32,24 @@ polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.
 | `--block <NUMBER\|HASH\|best\|finalized>` | | Block to trace with `--rpc`: a block number, a full hash, `best` (newest) or `finalized` (newest finalized). |
 | `--offline <DIR>` | | Replay a saved block with no network. |
 | `--from-json <FILE>` | | Read saved `block --json` output without replay. |
-| `--from-file <FILE>` | | Recorded `state_traceBlock` response, as the JSON-RPC envelope or the bare result. |
-| `--metadata <FILE>` | | Metadata for `--from-file`: SCALE bytes (`.scale`), or hex as returned by `state_getMetadata` (`.hex`, or the JSON-RPC response). |
 | `--save <DIR>` | | Save the block, its state and runtime for offline replay. |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send the trace over OTLP/HTTP. |
 | `--json <FILE>` | | Write the trace as JSON. `-` writes to stdout. |
-| `--proof-concurrency <N>` | 8 | RPC requests sent at once, 1 to 64. Each proof request asks for up to 32 keys. |
+| `--top <N>` | 15 | Rows in each item, extrinsic and hook table, and per phase in the duplicate reads table. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 | `--cache-dir <DIR>` | | Keep the [disk cache](#disk-cache) in this directory between runs. |
 | `--cache-max-bytes <N>` | 1073741824 (1 GiB) | Size limit for the [disk cache](#disk-cache), as bytes used on disk. A runtime in use is kept even above the limit. |
-| `--unauthenticated-metadata` | off | If the runtime's own metadata cannot be loaded, use the node's (or the saved) metadata unchecked. Output says so. |
 | `--runtime-override <WASM>` | | Run this Wasm instead of the chain's runtime. See [See runtime calls inside extrinsics](../guides/see-runtime-calls.md). Cannot be combined with `--save`. |
 
-Without `--otlp` or `--json`, `block` prints a one-line count of phases and operations.
+Without `--otlp` or `--json`, `block` prints storage summary tables.
+
+It prints the tables **Storage per phase**, **Phase shares**, **Top items by proof bytes** and **Extrinsic distributions**.
+Then **Hooks**, only with runtime spans, and **Duplicate reads per phase**.
+[Find the heaviest storage items](../guides/find-heaviest-items.md) explains the columns.
 
 A flag that does not apply to the source fails with exit code 2.
-`--block`, `--proof-concurrency` and `--rpc-timeout` need `--rpc`, and `--metadata` needs `--from-file`.
-The cache and metadata flags do not work with `--from-file` or `--from-json`.
+`--block` and `--rpc-timeout` need `--rpc`.
+The cache flags do not work with `--from-json`.
 
 Without `--cache-dir`, downloaded state stays in memory only.
 Compiled runtimes are still kept in `$XDG_CACHE_HOME/polkadot-frame-trace/wasm`, or `~/.cache/polkadot-frame-trace/wasm`.
@@ -63,35 +62,18 @@ These limits protect against a node that sends too much. They apply to every com
 | One RPC response | 64 MiB | A larger response fails the request at once, without another try. The largest real one, the proof of the runtime, is about 5.5 MB. |
 | One WebSocket frame | 16 MiB | A response over `ws://` or `wss://` may come in one frame. A larger frame fails the request at once, without another try. |
 | State the node sends for one block | 1,000,000 pieces or 256 MiB | More fails the block. Recent blocks of Polkadot, Kusama, Westend and their Asset Hubs, and a Westend Asset Hub runtime upgrade, needed at most 3,656 pieces and 5.6 MB. |
-| One replay | 10 minutes | A runtime that never finishes cannot be stopped from inside polkadot-frame-trace. `block`, `summary`, `call` and `report` warn once after 10 minutes of elapsed replay time, including RPC waits, and keep going: press Ctrl-C to stop them. `follow` exits with code 1 when a replay runs 10 minutes without RPC activity, see [follow](#follow). Real blocks take seconds, and compiling a new runtime about a minute. |
+| One replay | 10 minutes | A runtime that never finishes cannot be stopped from inside polkadot-frame-trace. `block`, `call` and `report` warn once after 10 minutes of elapsed replay time, including RPC waits, and keep going: press Ctrl-C to stop them. `follow` exits with code 1 when a replay runs 10 minutes without RPC activity, see [follow](#follow). Real blocks take seconds, and compiling a new runtime about a minute. |
 
 Output shows `--rpc` and `--otlp` URLs as scheme, host and port only.
 A user name, password or API key in the URL stays out of logs.
 Text from the node or the OTLP receiver in error lines is cut to 512 characters.
 A plain `ws://` or `http://` URL to another machine prints one warning, because anyone on the way can read and change what is sent. `localhost` and loopback addresses do not.
 
-## summary
-
-```sh
-polkadot-frame-trace summary --rpc URL --block finalized
-polkadot-frame-trace summary --from-json block.json
-```
-
-`summary` takes the same source flags as `block`, plus `--save`, `--proof-concurrency`, `--rpc-timeout`, `--cache-dir`, `--cache-max-bytes`, `--unauthenticated-metadata` and `--runtime-override`.
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--top <N>` | 15 | Rows in each item, extrinsic and hook table, and per phase in the duplicate reads table. |
-
-It prints the tables **Storage per phase**, **Phase shares**, **Top items by proof bytes** and **Extrinsic distributions**.
-Then **Hooks**, only with runtime spans, and **Duplicate reads per phase**.
-[Find the heaviest storage items](../guides/find-heaviest-items.md) explains the columns.
-
 ## call
 
 ```sh
 polkadot-frame-trace call --rpc URL --method Core_version --data 0x --check-state-call
-polkadot-frame-trace call --offline fixtures/replay/call-people-nonce --summary
+polkadot-frame-trace call --offline fixtures/replay/call-people-nonce
 ```
 
 | Flag | Default | Meaning |
@@ -104,16 +86,14 @@ polkadot-frame-trace call --offline fixtures/replay/call-people-nonce --summary
 | `--offline <DIR>` | | Replay a saved call with no network. |
 | `--save <DIR>` | | Save the call and its state for offline replay. |
 | `--check-state-call` | off | Compare the result with the node's `state_call` at the same block. |
-| `--summary` | off | Print the storage tables. |
 | `--json <FILE>` | | Write the trace and result as JSON. `-` writes to stdout and sends tables to stderr. |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send the trace over OTLP/HTTP. |
-| `--proof-concurrency <N>` | 8 | RPC requests sent at once, 1 to 64. Each proof request asks for up to 32 keys. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 | `--cache-dir <DIR>` | | As for `block`. |
 | `--cache-max-bytes <N>` | 1073741824 (1 GiB) | As for `block`. |
-| `--unauthenticated-metadata` | off | As for `block`. |
 | `--runtime-override <WASM>` | | As for `block`. |
 
+`call` prints storage summary tables by default. With `--json -`, the tables go to stderr.
 With `--rpc`, give `--method` and exactly one of `--data` or `--args`.
 
 ## report
@@ -126,13 +106,11 @@ polkadot-frame-trace report --rpc URL --last 10
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `[BLOCK.json]...` | | Saved `block --json` files. |
-| `--from-json <BLOCK.json>` | | More saved files. Repeat the flag for each. |
 | `--rpc <URL>` | | Replay a range of finalized blocks from this node. |
 | `--from <N>` | | First block of the range. Not the genesis block. |
 | `--to <N>` | | Last block of the range, included. At most the latest finalized block. |
 | `--last <K>` | | The K most recent finalized blocks. |
-| `--concurrency <N>` | 2 | Blocks replayed at once, 1 to 4. |
-| `--proof-concurrency <N>` | 8 | RPC requests at once across all blocks, 1 to 64. Each proof request asks for up to 32 keys. |
+| `--workers <N>` | 2 | Blocks replayed at once, 1 to 4. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 | `--cache-dir <DIR>` | | Keep the [disk cache](#disk-cache) in this directory. |
 | `--cache-max-bytes <N>` | 1073741824 (1 GiB) | Size limit for the [disk cache](#disk-cache), as bytes used on disk. |
@@ -141,7 +119,7 @@ polkadot-frame-trace report --rpc URL --last 10
 | `--json <FILE>` | | Write the report as JSON. `-` writes it to stdout and the tables to stderr. |
 
 A range holds at most 10,000 blocks.
-`--concurrency`, `--proof-concurrency`, `--rpc-timeout`, `--cache-dir` and `--cache-max-bytes` need `--rpc`; with saved files they are refused.
+`--workers`, `--rpc-timeout`, `--cache-dir` and `--cache-max-bytes` need `--rpc`; with saved files they are refused.
 
 ## follow
 
@@ -156,11 +134,9 @@ polkadot-frame-trace follow --rpc URL --best
 | `--best` | off | Follow the newest blocks instead of finalized ones, and report reorgs. |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send each trace over OTLP/HTTP. |
 | `--workers <N>` | 8 | Blocks replayed at once, 1 to 16. |
-| `--proof-concurrency <N>` | 16 | RPC requests at once across all workers, 1 to 64. Each proof request asks for up to 32 keys. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 | `--cache-dir <DIR>` | | Keep the [disk cache](#disk-cache) in this directory. |
 | `--cache-max-bytes <N>` | 1073741824 (1 GiB) | Size limit for the [disk cache](#disk-cache), as bytes used on disk. |
-| `--unauthenticated-metadata` | off | As for `block`. |
 
 | Limit | Value | Meaning |
 | --- | --- | --- |
@@ -213,11 +189,6 @@ See [Send traces through Grafana Alloy to Tempo](../guides/send-traces-through-a
 | 2 | The command line was wrong, for example a missing or unknown flag. |
 | 3 | `call --check-state-call` found a different result from the node's. JSON, save and export still ran. |
 | 130 | `follow` got a second stop signal and exited at once. |
-
-## Older flag names
-
-`--oracle` still works as `--check-state-call`, and `--rpc-metadata-fallback` as `--unauthenticated-metadata`.
-They are hidden from `--help`.
 
 ## Disk cache
 

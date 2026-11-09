@@ -130,16 +130,6 @@ impl Error {
     }
 }
 
-// Only used by the explicitly enabled unauthenticated metadata fallback.
-fn metadata_result(result: Result<Value>) -> Result<String> {
-    match result {
-        Ok(Value::String(text)) => Ok(text),
-        Ok(Value::Null) | Err(Error::Unavailable(_)) => Ok(String::new()),
-        Ok(_) => Err(Error::Rpc("state_getMetadata: non-string result".into())),
-        Err(error) => Err(error),
-    }
-}
-
 type Header = generic::Header<u32, BlakeTwo256>;
 type Block = generic::Block<Header, OpaqueExtrinsic>;
 // stable2609 omni-node's host functions. Missing imports are deliberately NOT allowed.

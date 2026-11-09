@@ -16,14 +16,3 @@ but are much shorter than a real block. Keys are real `twox128` hashes; values a
 - `real/`: one block recorded from a real node, see [real/README.md](real/README.md).
 
 Other recorded fixtures live under `fixtures/<chain>/`.
-
-
-`pre-e86f740.json` is public block JSON generated with the unmodified 5a1963e CLI
-in a temporary detached worktree, using:
-
-```sh
-cargo +1.93.0 build --locked -p polkadot-frame-trace
-polkadot-frame-trace block --from-file fixtures/model/two-extrinsics.json --json pre-e86f740.json
-```
-
-No fields were removed to simulate legacy input.

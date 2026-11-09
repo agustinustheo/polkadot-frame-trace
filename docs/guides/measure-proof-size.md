@@ -26,7 +26,7 @@ A live Westend Asset Hub block in [Your first trace](../getting-started/first-tr
 ## 2. Per phase
 
 ```sh
-polkadot-frame-trace summary --offline fixtures/replay/people-traced --top 5
+polkadot-frame-trace block --offline fixtures/replay/people-traced --top 5
 ```
 
 ```text

@@ -24,9 +24,8 @@ fn run(args: &[&str]) -> Output {
 fn ignored_source_options_are_rejected_before_loading_or_connecting() {
     let rpc = "http://127.0.0.1:1";
     // A missing source or input mode, or two of them at once.
-    let mut usage: Vec<Vec<&str>> = vec![
+    let usage: Vec<Vec<&str>> = vec![
         vec!["block"],
-        vec!["summary"],
         vec!["call"],
         vec!["report"],
         vec!["call", "--rpc", rpc],
@@ -37,66 +36,26 @@ fn ignored_source_options_are_rejected_before_loading_or_connecting() {
         vec!["call", "--offline", "missing", "--rpc", rpc],
         vec!["call", "--offline", "missing", "--data", "0x"],
         vec!["report", "--rpc", rpc, "missing.json"],
+        vec!["block", "--offline", "missing", "--from-json", "missing"],
     ];
-    for command in ["block", "summary"] {
-        for sources in [
-            ["--offline", "missing", "--from-file", "missing"],
-            ["--offline", "missing", "--from-json", "missing"],
-            ["--from-file", "missing", "--from-json", "missing"],
-        ] {
-            usage.push([&[command][..], &sources].concat());
-        }
+    // A source with an option it would ignore.
+    let mut ignored = vec![vec!["call", "--offline", "missing", "--check-state-call"]];
+    for flags in [
+        &["--block", "1"][..],
+        &["--cache-dir", "cache"],
+        &["--cache-max-bytes", "1073741824"],
+    ] {
+        ignored.push([&["block", "--from-json", "missing"][..], flags].concat());
     }
-    // A source with an option it would ignore. `--oracle` and its hidden alias
-    // `--check-state-call` are still recognized.
-    let mut ignored: Vec<Vec<&str>> = vec![
-        vec!["call", "--offline", "missing", "--oracle"],
-        vec!["call", "--offline", "missing", "--check-state-call"],
-    ];
-    for command in ["block", "summary"] {
-        for source in ["--rpc", "--offline", "--from-json"] {
-            ignored.push(vec![
-                command,
-                source,
-                "missing",
-                "--metadata",
-                "missing.scale",
-            ]);
-        }
-        for source in ["--from-file", "--from-json"] {
-            for flags in [
-                &["--block", "1"][..],
-                &["--proof-concurrency", "8"],
-                &["--cache-dir", "cache"],
-                &["--cache-max-bytes", "1073741824"],
-                &["--unauthenticated-metadata"],
-                &["--rpc-metadata-fallback"],
-            ] {
-                ignored.push([&[command, source, "missing"][..], flags].concat());
-            }
-        }
-    }
-    for command in ["block", "summary", "call"] {
-        ignored.push(vec![
-            command,
-            "--offline",
-            "missing",
-            "--proof-concurrency",
-            "8",
-        ]);
-    }
-    for source in [&["missing.json"][..], &["--from-json", "missing.json"]] {
-        for flags in [
-            ["--from", "1"],
-            ["--to", "2"],
-            ["--last", "2"],
-            ["--concurrency", "2"],
-            ["--proof-concurrency", "8"],
-            ["--cache-dir", "cache"],
-            ["--cache-max-bytes", "1073741824"],
-        ] {
-            ignored.push([&["report"][..], source, &flags].concat());
-        }
+    for flags in [
+        ["--from", "1"],
+        ["--to", "2"],
+        ["--last", "2"],
+        ["--workers", "2"],
+        ["--cache-dir", "cache"],
+        ["--cache-max-bytes", "1073741824"],
+    ] {
+        ignored.push([&["report", "missing.json"][..], &flags].concat());
     }
     for (args, expected) in usage.iter().map(|args| (args, None)).chain(
         ignored
@@ -121,65 +80,6 @@ fn rpc_source_reports_connection_failure() {
     assert!(stderr.contains("connect ws://127.0.0.1:1:"), "{stderr}");
     for hidden in ["alice9", "secret", "apikey", "k3y", "/path"] {
         assert!(!stderr.contains(hidden), "{stderr}");
-    }
-}
-
-#[test]
-fn summary_reads_hex_metadata_and_a_real_trace() {
-    let out = run(&[
-        "summary",
-        "--from-file",
-        &fixture("model/real/people-paseo-block-1-trace-state.json"),
-        "--metadata",
-        &fixture("model/real/people-paseo-block-1-metadata.hex"),
-    ]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    for expected in [
-        "extrinsic 0: ParachainSystem.set_validation_data",
-        "extrinsic 1: Timestamp.set",
-        "post inherents (on_poll)",
-        "System::BlockWeight",
-    ] {
-        assert!(
-            stdout.contains(expected),
-            "missing {expected:?} in:\n{stdout}"
-        );
-    }
-
-    // Block 2: post inherents run inside the first signed extrinsic and show under it.
-    let out = run(&[
-        "summary",
-        "--from-file",
-        &fixture("model/real/people-paseo-block-2-trace-state.json"),
-        "--metadata",
-        &fixture("model/real/people-paseo-block-1-metadata.hex"),
-    ]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let rows: Vec<&str> = stdout.lines().filter(|l| l.contains(" ┆ ")).collect();
-    let transfer = rows
-        .iter()
-        .position(|l| l.contains("extrinsic 2: Balances.transfer_keep_alive"))
-        .unwrap();
-    assert!(
-        rows[transfer + 1].contains("└ post inherents (on_poll)"),
-        "{stdout}"
-    );
-    // 103 own ops (check reads + its work), 14 nested.
-    let ops = |row: &str| row.split('┆').nth(1).unwrap().trim().to_owned();
-    assert_eq!(ops(rows[transfer]), "103", "{stdout}");
-    assert_eq!(ops(rows[transfer + 1]), "14", "{stdout}");
-    for internal in ["post_inherents", "signed_extrinsics", "extrinsics_unknown"] {
-        assert!(!stdout.contains(internal), "{stdout}");
     }
 }
 
@@ -211,8 +111,11 @@ fn duplicate_reads_are_grouped_by_key_not_by_name() {
         "polkadot-frame-trace-dups-{}.json",
         std::process::id()
     ));
-    std::fs::write(&path, json).unwrap();
-    let out = run(&["summary", "--from-file", path.to_str().unwrap()]);
+    let raw = polkadot_frame_trace_model::rpc::parse_trace_block(&json).unwrap();
+    let traced = polkadot_frame_trace_model::TracedBlock::from_trace(&raw).unwrap();
+    let block = polkadot_frame_trace_decode::annotate(&traced, None);
+    std::fs::write(&path, serde_json::to_vec(&block).unwrap()).unwrap();
+    let out = run(&["block", "--from-json", path.to_str().unwrap()]);
     std::fs::remove_file(&path).ok();
     assert!(
         out.status.success(),
@@ -296,6 +199,14 @@ fn otlp_response(
 
 #[test]
 fn block_fails_when_the_collector_rejects_spans() {
+    let path = std::env::temp_dir().join(format!("frame-collector-{}.json", std::process::id()));
+    let raw = polkadot_frame_trace_model::rpc::parse_trace_block(include_str!(
+        "../../../fixtures/model/real/people-paseo-block-1-trace-state.json"
+    ))
+    .unwrap();
+    let traced = polkadot_frame_trace_model::TracedBlock::from_trace(&raw).unwrap();
+    let block = polkadot_frame_trace_decode::annotate(&traced, None);
+    std::fs::write(&path, serde_json::to_vec(&block).unwrap()).unwrap();
     const PROTOBUF: &str = "application/x-protobuf";
     const JSON: &str = "application/json; charset=utf-8";
     // 1 block + 5 phases + 315 ops.
@@ -350,8 +261,8 @@ fn block_fails_when_the_collector_rejects_spans() {
         let (url, server) = otlp_response(status, content_type, body.to_vec(), 10);
         let out = run(&[
             "block",
-            "--from-file",
-            &fixture("model/real/people-paseo-block-1-trace-state.json"),
+            "--from-json",
+            path.to_str().unwrap(),
             "--otlp",
             &url,
         ]);
@@ -361,6 +272,7 @@ fn block_fails_when_the_collector_rejects_spans() {
         assert!(stderr.contains(expected), "{stderr}");
         assert_eq!(code == 0, stderr.contains("exported 321 spans"), "{stderr}");
     }
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -484,7 +396,6 @@ fn offline_block_reports_root_and_writes_measured_named_json() {
         "block",
         "--offline",
         &fixture("replay/people-transfer"),
-        "--unauthenticated-metadata",
         "--json",
         path.to_str().unwrap(),
     ]);
@@ -627,46 +538,42 @@ fn artifact_rpc(
         "chain_getHeader" if request["params"][0] == json!(artifact.block_hash) => artifact.block["header"].clone(),
         "chain_getHeader" => artifact.parent_header.clone(),
         "state_getRuntimeVersion" => artifact.runtime_version.clone(),
-        // Metadata V13 with its opaque payload encoded as an empty Vec. Execution must survive.
-        "state_getMetadata" => json!("0x6d6574610d00"),
         "state_getReadProof" => json!({"at":artifact.block["header"]["parentHash"],"proof":artifact.proof_nodes}),
         method => panic!("unexpected method {method}"),
     }})
 }
 
 #[test]
-fn block_and_summary_pin_the_finalized_head_before_replay() {
+fn block_pins_the_finalized_head_before_replay() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
     let _guard = REPLAY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    for command in ["block", "summary"] {
-        let artifact = polkadot_frame_trace_replay::Artifact::load(std::path::Path::new(&fixture(
-            "replay/people-transfer",
-        )))
-        .unwrap();
-        let hash = serde_json::json!(artifact.block_hash);
-        let heads = Arc::new(AtomicUsize::new(0));
-        let requests = heads.clone();
-        let node = MockNode::new(move |request| {
-            match request["method"].as_str().unwrap() {
-                "chain_getFinalizedHead" => {
-                    assert_eq!(request["params"], serde_json::json!([]));
-                    requests.fetch_add(1, Ordering::SeqCst);
-                }
-                "chain_getBlock" => assert_eq!(request["params"], serde_json::json!([hash])),
-                "chain_getBlockHash" => panic!("finalized must use its pinned hash"),
-                _ => {}
+    let artifact = polkadot_frame_trace_replay::Artifact::load(std::path::Path::new(&fixture(
+        "replay/people-transfer",
+    )))
+    .unwrap();
+    let hash = serde_json::json!(artifact.block_hash);
+    let heads = Arc::new(AtomicUsize::new(0));
+    let requests = heads.clone();
+    let node = MockNode::new(move |request| {
+        match request["method"].as_str().unwrap() {
+            "chain_getFinalizedHead" => {
+                assert_eq!(request["params"], serde_json::json!([]));
+                requests.fetch_add(1, Ordering::SeqCst);
             }
-            artifact_rpc(&artifact, request)
-        });
-        let out = run(&[command, "--rpc", &node.url, "--block", "finalized"]);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success(), "{stderr}");
-        assert!(stderr.contains("root check: PASS"), "{stderr}");
-        assert_eq!(heads.load(Ordering::SeqCst), 1);
-    }
+            "chain_getBlock" => assert_eq!(request["params"], serde_json::json!([hash])),
+            "chain_getBlockHash" => panic!("finalized must use its pinned hash"),
+            _ => {}
+        }
+        artifact_rpc(&artifact, request)
+    });
+    let out = run(&["block", "--rpc", &node.url, "--block", "finalized"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("root check: PASS"), "{stderr}");
+    assert_eq!(heads.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -736,7 +643,7 @@ fn call_pins_finalized_state_for_replay_and_state_call_check() {
 }
 
 #[test]
-fn cli_save_then_offline_ignores_unauthenticated_rpc_metadata() {
+fn cli_save_then_offline_replays_without_rpc() {
     let _serial = REPLAY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let artifact = polkadot_frame_trace_replay::Artifact::load(std::path::Path::new(&fixture(
         "replay/people-transfer",
@@ -758,23 +665,18 @@ fn cli_save_then_offline_ignores_unauthenticated_rpc_metadata() {
     ]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("root check: PASS") && !stderr.contains("unsupported metadata version V13"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("root check: PASS"), "{stderr}");
     drop(node); // The round trip must work after the mock node has stopped.
     let saved = polkadot_frame_trace_replay::Artifact::load(&dir).unwrap();
     assert!(saved.proof_nodes.iter().all(|node| node.starts_with("0x")));
-    for command in ["block", "summary"] {
-        let output = run(&[command, "--offline", dir.to_str().unwrap()]);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("RPC calls: 0 (timed replay: 0)"));
-        assert!(!output.stdout.is_empty());
-    }
+    let output = run(&["block", "--offline", dir.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("RPC calls: 0 (timed replay: 0)"));
+    assert!(!output.stdout.is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1212,7 +1114,7 @@ fn endpoint_credentials_never_reach_the_output_but_the_host_and_port_do() {
         }
         assert!(text.contains(shown), "{shown} missing: {text}");
     };
-    let trace = fixture("model/real/people-paseo-block-1-trace-state.json");
+    let trace = fixture("replay/people-transfer");
     for (args, shown) in [
         (
             [
@@ -1235,7 +1137,7 @@ fn endpoint_credentials_never_reach_the_output_but_the_host_and_port_do() {
         ),
         (
             [
-                "--from-file",
+                "--offline",
                 trace.as_str(),
                 "--otlp",
                 &secret("http", "127.0.0.1:1"),
@@ -1243,7 +1145,7 @@ fn endpoint_credentials_never_reach_the_output_but_the_host_and_port_do() {
             "exporting to http://127.0.0.1:1: ",
         ),
         (
-            ["--from-file", trace.as_str(), "--otlp", unparsable],
+            ["--offline", trace.as_str(), "--otlp", unparsable],
             "invalid endpoint 'http://127.0.0.1:1'",
         ),
     ] {
@@ -1421,7 +1323,7 @@ fn rpc_timeout_lets_a_slow_node_answer() {
 }
 
 #[test]
-fn call_offline_exports_measured_named_ops_and_self_contained_round_trip() {
+fn call_offline_exports_measured_ops_and_self_contained_round_trip() {
     let _guard = REPLAY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let dir = std::env::temp_dir().join(format!(
         "polkadot-frame-trace-call-roundtrip-{}",
@@ -1431,7 +1333,6 @@ fn call_offline_exports_measured_named_ops_and_self_contained_round_trip() {
         "call",
         "--offline",
         &fixture("replay/call-people-nonce"),
-        "--unauthenticated-metadata",
         "--json",
         "-",
         "--save",
@@ -1446,9 +1347,9 @@ fn call_offline_exports_measured_named_ops_and_self_contained_round_trip() {
     assert_eq!(json["schema_version"], 2);
     assert_eq!(json["call"]["method"], "AccountNonceApi_account_nonce");
     assert_eq!(json["call"]["result"], "0x00000000");
-    assert!(json["call"]["decoded"].is_null()); // recorded metadata is V14
+    assert!(json["call"]["decoded"].is_null()); // saved proof does not cover metadata
     assert_eq!(json["phases"][0]["kind"], "call");
-    assert_eq!(json["phases"][0]["ops"][0]["item"], "System::Account");
+    assert_eq!(json["phases"][0]["ops"][0]["item"], "<unknown>");
     assert!(
         json["phases"][0]["ops"][0]["timing"]["duration_ns"]
             .as_u64()
@@ -1458,19 +1359,8 @@ fn call_offline_exports_measured_named_ops_and_self_contained_round_trip() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("root check: NOT APPLICABLE"));
     assert!(stderr.contains("RPC calls: 0 (timed replay: 0)"));
-    assert!(
-        stderr.contains("V14 metadata has no runtime API types")
-            && !stderr.contains("invalid metadata:")
-    );
     // The saved copy replays on its own. Without metadata the result stays hex.
-    let repeated = run(&[
-        "call",
-        "--offline",
-        dir.to_str().unwrap(),
-        "--summary",
-        "--json",
-        "-",
-    ]);
+    let repeated = run(&["call", "--offline", dir.to_str().unwrap(), "--json", "-"]);
     let stderr = String::from_utf8_lossy(&repeated.stderr);
     assert!(repeated.status.success(), "{stderr}");
     std::fs::remove_dir_all(dir).unwrap();
@@ -1600,7 +1490,7 @@ fn oracle_mismatch_exits_three_after_emitting_parseable_json_and_summary_to_stde
     let _serial = REPLAY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let node = call_node(true);
     let out = run(&["call", "--rpc", &node.url, "--method", "AccountNonceApi_account_nonce", "--args",
-        &serde_json::json!({"account":polkadot_frame_trace_replay::rpc::unhex("d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d").unwrap()}).to_string(), "--oracle", "--json", "-", "--summary"]);
+        &serde_json::json!({"account":polkadot_frame_trace_replay::rpc::unhex("d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d").unwrap()}).to_string(), "--check-state-call", "--json", "-"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(3), "{stderr}");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1631,13 +1521,14 @@ fn unknown_block_hash_reports_block_not_found() {
 }
 
 #[test]
-fn saved_block_json_drives_summary_and_multiblock_reports_without_replay() {
+fn saved_block_json_drives_tables_and_multiblock_reports_without_replay() {
+    let _guard = REPLAY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = std::env::temp_dir().join(format!("frame-report-{}.json", std::process::id()));
     let path2 = path.with_extension("second.json");
     let output = run(&[
         "block",
-        "--from-file",
-        &fixture("model/two-extrinsics.json"),
+        "--offline",
+        &fixture("replay/people-transfer"),
         "--json",
         path.to_str().unwrap(),
     ]);
@@ -1651,7 +1542,7 @@ fn saved_block_json_drives_summary_and_multiblock_reports_without_replay() {
     let count = block["totals"]["ops"].as_u64().unwrap();
     block["block_hash"] = "another block".into();
     std::fs::write(&path2, serde_json::to_vec(&block).unwrap()).unwrap();
-    let summary = run(&["summary", "--from-json", path.to_str().unwrap()]);
+    let summary = run(&["block", "--from-json", path.to_str().unwrap()]);
     assert!(
         summary.status.success(),
         "{}",
@@ -1673,15 +1564,17 @@ fn saved_block_json_drives_summary_and_multiblock_reports_without_replay() {
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
     assert_eq!(json["blocks"], 2);
     assert_eq!(json["totals"]["ops"], count * 2);
-    let duplicate = run(&[
-        "report",
-        "--from-json",
-        path.to_str().unwrap(),
-        "--from-json",
-        path.to_str().unwrap(),
-    ]);
+    let duplicate = run(&["report", path.to_str().unwrap(), path.to_str().unwrap()]);
     assert!(!duplicate.status.success());
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("duplicate block hash"));
+    let absent = fixture("model/absent-round5.json");
+    let out = run(&["report", &absent, path.to_str().unwrap(), "--json", "-"]);
+    assert_eq!(out.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["blocks"], 1);
+    assert_eq!(json["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(json["errors"][0]["input"], absent);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Errors"));
     for p in [path, path2] {
         std::fs::remove_file(p).unwrap();
     }
@@ -1733,24 +1626,6 @@ fn report_last_pins_finalized_hash_and_exports_replay_statistics() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(stderr.matches("root check: PASS").count(), 2);
     assert_eq!(stderr.matches("(timed replay: 0)").count(), 2);
-}
-
-#[test]
-fn report_continues_after_bad_files_emits_errors_and_exits_nonzero() {
-    let absent = fixture("model/absent-round5.json");
-    let out = run(&[
-        "report",
-        &absent,
-        &fixture("model/pre-e86f740.json"),
-        "--json",
-        "-",
-    ]);
-    assert_eq!(out.status.code(), Some(1));
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["blocks"], 1);
-    assert_eq!(json["errors"].as_array().unwrap().len(), 1);
-    assert_eq!(json["errors"][0]["input"], absent);
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Errors"));
 }
 
 /// The traced People Wasm is the `:code` value node inside the `people-traced` artifact.
@@ -1848,8 +1723,8 @@ fn runtime_override_replays_untraced_block_with_traced_wasm_and_labels_it() {
             .all(|s| s["wasm"] == false)
     );
 
-    // Saved JSON keeps the provenance: summary and (mixed) reports name the override first.
-    let out = run(&["summary", "--from-json", json.to_str().unwrap()]);
+    // Saved JSON keeps the provenance: block tables and mixed reports name the override first.
+    let out = run(&["block", "--from-json", json.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success());
     assert!(
@@ -1888,18 +1763,16 @@ fn runtime_override_replays_untraced_block_with_traced_wasm_and_labels_it() {
     assert_eq!(aggregate["blocks"], 2);
 
     // Saved artifacts never mix a substitute runtime's discovery with the chain's code.
-    for command in ["block", "summary"] {
-        let out = run(&[
-            command,
-            "--offline",
-            &fixture("replay/people-transfer"),
-            "--runtime-override",
-            wasm.to_str().unwrap(),
-            "--save",
-            json.to_str().unwrap(),
-        ]);
-        assert_eq!(out.status.code(), Some(2), "{command}");
-    }
+    let out = run(&[
+        "block",
+        "--offline",
+        &fixture("replay/people-transfer"),
+        "--runtime-override",
+        wasm.to_str().unwrap(),
+        "--save",
+        json.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(2), "block");
     let out = run(&[
         "call",
         "--offline",

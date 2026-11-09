@@ -72,7 +72,8 @@ For an SS58 address or any shape JSON cannot express, use `--data`.
 
 ## 4. See the reads
 
-- `--summary` prints the same tables as `polkadot-frame-trace summary`.
+The call prints storage summary tables by default.
+
 - `--json <file>` writes the trace, the input, the raw result and the decoded result.
 - `--otlp` sends the trace to Jaeger or Tempo.
 

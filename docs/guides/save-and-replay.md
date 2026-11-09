@@ -42,14 +42,14 @@ exported 555 spans to http://127.0.0.1:4318
 It checks every saved value against the parent state root again and runs the [root check](../concepts/what-a-replay-proves.md) again.
 An edited or broken saved block fails instead of giving a wrong trace.
 
-`summary --offline saved-block` and `block --offline saved-block --json <file>` work the same way.
+`block --offline saved-block` and `block --offline saved-block --json <file>` work the same way.
 
 ## 3. Read saved JSON without replaying
 
 `--json` output can be read again without running the block:
 
 ```sh
-polkadot-frame-trace summary --from-json block.json --top 3
+polkadot-frame-trace block --from-json block.json --top 3
 ```
 
 ```text

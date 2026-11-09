@@ -33,7 +33,6 @@ pub struct ReplaySession {
     pub(crate) disk: Option<Arc<crate::disk::NodeStore>>,
     pub(crate) speculative_discovery: bool,
     pub(crate) metadata: Arc<Mutex<MetadataCache>>,
-    pub(crate) rpc_metadata_fallback: bool,
     pub(crate) runtime_override: Option<Arc<Vec<u8>>>,
     /// The last announced override, so repeated loads of one context print once.
     pub(crate) announced_override: Arc<Mutex<Option<crate::RuntimeOverride>>>,
@@ -111,7 +110,6 @@ impl ReplaySession {
             executors: Default::default(),
             speculative_discovery: true,
             metadata: Default::default(),
-            rpc_metadata_fallback: false,
             runtime_override: None,
             announced_override: Default::default(),
             #[cfg(test)]
@@ -181,11 +179,6 @@ impl ReplaySession {
         while history.len() > 3 {
             history.pop_front();
         }
-    }
-    /// Explicitly permit unauthenticated RPC/stored metadata only if local execution fails.
-    pub fn with_rpc_metadata_fallback(mut self, enabled: bool) -> Self {
-        self.rpc_metadata_fallback = enabled;
-        self
     }
     /// Execute this Wasm instead of the state's authenticated `:code`. This deliberately
     /// bypasses the code-hash binding to the parent state; every replay reports both hashes.

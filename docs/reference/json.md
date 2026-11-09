@@ -3,7 +3,7 @@
 `block --json` and `call --json` write one trace as JSON.
 `report --json` writes the totals of many blocks.
 Both carry `"schema_version": 2`.
-`summary --from-json` and `report` also read version 1 files, written by older versions; they reject unknown versions.
+`block --from-json` and `report` read version 2 files and reject other versions.
 
 Field names here are stable.
 Some raw values differ from the words in the tables, for example `overlay` for **cache**.
@@ -20,7 +20,7 @@ Top-level fields:
 | --- | --- |
 | `schema_version` | `2`. |
 | `block_number`, `block_hash`, `parent_hash` | The block. |
-| `execution` | The replay result, see below. Absent for recorded `state_traceBlock` input. |
+| `execution` | The replay result, see below. |
 | `timing` | `start_ns` and `duration_ns` of the whole replay. |
 | `totals` | Counts for the whole block, see [Stats](#stats). |
 | `phases` | The [phases](../concepts/phases.md), in order. |

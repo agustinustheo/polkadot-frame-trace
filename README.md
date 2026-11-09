@@ -74,7 +74,7 @@ Start Jaeger first: `docker run -d --rm --name jaeger -p 16686:16686 -p 4318:431
 ```sh
 RPC=wss://westend-asset-hub-rpc.polkadot.io
 polkadot-frame-trace block --rpc $RPC --block finalized --otlp       # one block, as a trace in Jaeger
-polkadot-frame-trace summary --rpc $RPC --block finalized            # a block as tables         
+polkadot-frame-trace block --rpc $RPC --block finalized              # a block as tables
 polkadot-frame-trace block --rpc $RPC --block finalized \
   --save saved-block --json block.json                               # keep it to replay offline
 polkadot-frame-trace block --offline saved-block --otlp              # replay it with no network
@@ -92,7 +92,7 @@ Open <http://127.0.0.1:16686>, pick the service `polkadot-frame-trace` and click
 Block #4 of the local People chain is saved in this repository. From a clone, replay it with no network:
 
 ```sh
-polkadot-frame-trace summary --offline fixtures/replay/people-traced
+polkadot-frame-trace block --offline fixtures/replay/people-traced
 ```
 
 ```text
@@ -135,7 +135,7 @@ Every block below passed the root check.
 | Westend Asset Hub runtime upgrade | #18,985,169 and #18,985,170, the first on the new code; nightly | |
 | Westend relay chain | The finalized block, nightly; #33,614,892 | |
 | Paseo Asset Hub | | #15,366,850, a contract call with child trie reads and writes |
-| Paseo People Next | 20 blocks with `block` and `summary` | |
+| Paseo People Next | 20 blocks with `block` | |
 | A local People chain | | Saved blocks, including a traced runtime |
 
 [What polkadot-frame-trace supports](https://agustinustheodorus.com/polkadot-frame-trace/reference/support.html) lists the chain requirements, the RPC methods it sends and the host functions.

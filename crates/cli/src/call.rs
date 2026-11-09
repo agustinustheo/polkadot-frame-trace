@@ -44,23 +44,16 @@ pub struct CallArgs {
     /// Compare the result with the node's state_call at the same block hash.
     #[arg(
         long = "check-state-call",
-        alias = "oracle",
         requires = "rpc",
         conflicts_with = "offline"
     )]
     oracle: bool,
-    /// Print storage summary tables.
-    #[arg(long)]
-    summary: bool,
     /// Write the decoded trace as JSON to this file (`-` for stdout).
     #[arg(long, value_name = "FILE")]
     json: Option<PathBuf>,
     /// OTLP/HTTP endpoint (bare --otlp uses http://127.0.0.1:4318).
     #[arg(long, num_args = 0..=1, default_missing_value = "http://127.0.0.1:4318")]
     otlp: Option<String>,
-    /// Maximum concurrent RPC requests (1–64; up to 32 proof keys per request).
-    #[arg(long, default_value_t = 8, requires = "rpc", conflicts_with = "offline", value_parser = clap::value_parser!(u8).range(1..=64))]
-    proof_concurrency: u8,
     /// Longest wait in seconds for one RPC response; each request gets four tries.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = super::source::rpc_timeout, requires = "rpc", conflicts_with = "offline")]
     rpc_timeout: Duration,
@@ -70,9 +63,6 @@ pub struct CallArgs {
     /// Disk cache limit in bytes; runtime code in use is kept.
     #[arg(long, default_value_t = 1073741824)]
     cache_max_bytes: u64,
-    /// Allow unverified metadata from the node or saved replay.
-    #[arg(long = "unauthenticated-metadata", alias = "rpc-metadata-fallback")]
-    rpc_metadata_fallback: bool,
     /// Execute this Wasm instead of the authenticated :code, for example the same runtime
     /// built with `with-tracing`. Bypasses the code-hash check. Labelled on stderr, in JSON
     /// and in OTLP. Warns when its runtime version differs from the chain's. Cannot be
@@ -96,14 +86,13 @@ pub fn run(args: CallArgs) -> Result<()> {
     let runtime_override = super::source::read_runtime_override(args.runtime_override.as_deref())?;
     let session =
         ReplaySession::with_cache_max_bytes(args.cache_dir.as_deref(), args.cache_max_bytes)?
-            .with_rpc_metadata_fallback(args.rpc_metadata_fallback)
             .with_runtime_override(runtime_override);
     let (artifact, rpc) = if let Some(dir) = &args.offline {
         (Artifact::load(dir)?, None)
     } else {
         let rpc = super::source::rpc(
             args.rpc.as_deref().context("--rpc required")?,
-            args.proof_concurrency,
+            super::source::PROOF_CONCURRENCY,
             args.rpc_timeout,
             Default::default(),
         )?;
@@ -219,12 +208,7 @@ pub fn run(args: CallArgs) -> Result<()> {
             }
         );
     }
-    super::emit(
-        &trace,
-        args.json.as_deref(),
-        args.otlp.as_deref(),
-        args.summary.then_some(15),
-    )?;
+    super::emit(&trace, args.json.as_deref(), args.otlp.as_deref(), Some(15))?;
     if replay.oracle_match == Some(false) {
         return Err(super::OracleMismatch.into());
     }

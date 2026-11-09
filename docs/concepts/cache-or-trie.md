@@ -8,7 +8,7 @@ There are three origins. `unknown` means the origin was not recorded or does not
 | **cache** | The block had already written this key, so the value came from the block's own changes in memory. | Always 0 |
 | **trie (already in proof)** | The read went to the chain state and used only trie nodes seen earlier in this replay. A rollback may have removed them from the current proof. | Usually 0 |
 | **trie (new)** | The read went to the chain state and needed trie nodes the block had not touched yet. | Usually more than 0 |
-| **unknown** | Not a read, or the input had no origin, for example a recorded `state_traceBlock` file. | n/a |
+| **unknown** | Not a read, or the input had no origin. | n/a |
 
 ## Three real reads
 
@@ -48,7 +48,7 @@ After the transfer writes Bob's balance, his next reads come from the cache.
 
 - In Jaeger, on every storage operation: `frame.storage.origin`, with the same words as the tables.
 - In [JSON](../reference/json.md), as `origin`, with its own stable values.
-- In `summary` and `report`: the columns `reads: cache`, `trie (already in proof)`, `trie (new)` and `unknown`.
+- In `block` and `report`: the columns `reads: cache`, `trie (already in proof)`, `trie (new)` and `unknown`.
 - In the summary line, for example:
 
 ```text

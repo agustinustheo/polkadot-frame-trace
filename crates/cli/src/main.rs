@@ -41,7 +41,7 @@ enum Command {
     Report(report::ReportArgs),
     /// Trace storage use and the result of a runtime API call.
     #[command(
-        after_help = "Examples:\n  polkadot-frame-trace call --rpc URL --at finalized --method Core_version --data 0x --check-state-call\n  polkadot-frame-trace call --offline fixtures/replay/call-people-nonce --summary"
+        after_help = "Examples:\n  polkadot-frame-trace call --rpc URL --at finalized --method Core_version --data 0x --check-state-call\n  polkadot-frame-trace call --offline fixtures/replay/call-people-nonce"
     )]
     Call(call::CallArgs),
     /// Trace storage use in one block and export it to JSON or a trace viewer.
@@ -49,11 +49,6 @@ enum Command {
         after_help = "Examples:\n  polkadot-frame-trace block --rpc URL --block finalized --otlp\n  polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.json"
     )]
     Block(BlockArgs),
-    /// Show storage use by block phase and storage item.
-    #[command(
-        after_help = "Examples:\n  polkadot-frame-trace summary --rpc URL --block finalized\n  polkadot-frame-trace summary --from-json block.json"
-    )]
-    Summary(SummaryArgs),
     /// Trace new finalized blocks as they arrive.
     #[command(
         after_help = "Examples:\n  polkadot-frame-trace follow --rpc URL --otlp\n  polkadot-frame-trace follow --rpc URL --best"
@@ -71,12 +66,6 @@ struct BlockArgs {
     /// Write the decoded trace as JSON to this file (`-` for stdout).
     #[arg(long, value_name = "FILE")]
     json: Option<PathBuf>,
-}
-
-#[derive(Args)]
-struct SummaryArgs {
-    #[command(flatten)]
-    source: source::SourceArgs,
     /// Maximum rows in each item, extrinsic, hook and per-phase duplicate table.
     #[arg(long, default_value_t = 15)]
     top: usize,
@@ -114,30 +103,17 @@ fn run() -> Result<()> {
         Command::Block(args) => block(args),
         Command::Call(args) => call::run(args),
         Command::Follow(args) => follow(args),
-        Command::Summary(args) => {
-            let block = load(&args.source)?;
-            print!("{}", summary::render(&block, args.top));
-            Ok(())
-        }
     }
 }
 
 fn block(args: BlockArgs) -> Result<()> {
     let block = load(&args.source)?;
-    emit(&block, args.json.as_deref(), args.otlp.as_deref(), None)?;
-    if args.json.is_none() && args.otlp.is_none() {
-        let t = &block.totals;
-        println!(
-            "block {}: {} phases, {} storage operations ({} reads, {} writes, {} duplicate reads). \
-             Use --otlp or --json to export it.",
-            block.block_hash,
-            block.phases.len(),
-            t.ops,
-            t.reads,
-            t.writes,
-            t.duplicate_reads
-        );
-    }
+    emit(
+        &block,
+        args.json.as_deref(),
+        args.otlp.as_deref(),
+        (args.json.is_none() && args.otlp.is_none()).then_some(args.top),
+    )?;
     Ok(())
 }
 
@@ -225,9 +201,6 @@ struct FollowArgs {
     /// Blocks replayed at once (1–16).
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u8).range(1..=16))]
     workers: u8,
-    /// Maximum concurrent RPC requests across all workers (1–64; up to 32 proof keys per request).
-    #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u8).range(1..=64))]
-    proof_concurrency: u8,
     /// Longest wait in seconds for one RPC response; each request gets four tries.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = source::rpc_timeout)]
     rpc_timeout: std::time::Duration,
@@ -237,9 +210,6 @@ struct FollowArgs {
     /// Disk cache limit in bytes; runtime code in use is kept.
     #[arg(long, default_value_t = 1073741824)]
     cache_max_bytes: u64,
-    /// Allow unverified metadata from the node or saved replay.
-    #[arg(long = "unauthenticated-metadata", alias = "rpc-metadata-fallback")]
-    rpc_metadata_fallback: bool,
 }
 
 fn follow(args: FollowArgs) -> Result<()> {

@@ -34,10 +34,3 @@ That is why it is larger than the sum of the phases.
 
 Each span's bar length is its duration in the timed replay.
 `frame.timing = timed replay` marks spans with real times.
-
-## Recorded traces have no times
-
-`--from-file` reads a saved `state_traceBlock` response, which has no timing.
-polkadot-frame-trace spaces those operations evenly, one millisecond apart, so the tree stays readable.
-Those spans carry `frame.timing = no timing`.
-Ignore their durations.

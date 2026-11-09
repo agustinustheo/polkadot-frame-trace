@@ -64,7 +64,7 @@ Child trie operations use the same names and carry `frame.storage.child_trie`.
 | `frame.block.parent_hash` | string | Parent block hash. |
 | `frame.block.extrinsics` | int | Number of extrinsics. |
 | `frame.trace.skipped_events` | int | Recorded events that were not storage operations. |
-| `frame.timing` | string | `timed replay` for a replay, `no timing` for a recorded `state_traceBlock` file. See [Timings](../concepts/timings.md). |
+| `frame.timing` | string | `timed replay`. See [Timings](../concepts/timings.md). |
 | `frame.storage.*` totals | int | See [Totals](#totals). |
 
 On a runtime API call trace, also:
@@ -93,7 +93,7 @@ With `--runtime-override`, also:
 
 | Attribute | Type | Meaning |
 | --- | --- | --- |
-| `frame.phase` | string | Phase kind: `initialization`, `extrinsic`, `post inherents (on_poll)`, `finalization`, or `no phase markers` for a recorded trace without them. |
+| `frame.phase` | string | Phase kind: `initialization`, `extrinsic`, `post inherents (on_poll)`, `finalization`. |
 | `frame.extrinsic.index` | int | Extrinsic number, for extrinsic phases. |
 | `frame.extrinsic.call` | string | `Pallet.call`, for extrinsic phases. |
 | `frame.extrinsic.hash` | string | `0x`-prefixed blake2-256 of the encoded extrinsic: the transaction hash `author_submitExtrinsic` returns. Use it to join a load generator's records or spans to this phase. Absent when the extrinsic bytes were not in the trace. |
@@ -131,7 +131,7 @@ With `--runtime-override`, also:
 | `frame.storage.child_trie` | string | The child trie, for child trie operations. |
 | `frame.storage.child_trie_truncated` | bool | Present and `true` if the child trie name was cut. |
 | `frame.extrinsic.index` | int | The extrinsic this operation belongs to, if any. |
-| `frame.timing` | string | `timed replay`, or `no timing` for a recorded `state_traceBlock` file. |
+| `frame.timing` | string | `timed replay`. |
 
 ## Totals
 

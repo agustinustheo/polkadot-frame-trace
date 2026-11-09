@@ -1,7 +1,7 @@
 """Convert a self-contained `--save` directory into fixture form.
 
 The stored metadata is emptied: a replay derives metadata by running the runtime on the
-saved proof nodes and uses stored metadata only with --unauthenticated-metadata. Every proof
+saved proof nodes. Every proof
 node of at least THRESHOLD bytes moves into BLOBS/<blake2-256>.zst (zstd -19) and is
 replaced by `blob:<hash>`; the artifact is recompressed with zstd -19. Existing blobs with
 the same hash are reused.

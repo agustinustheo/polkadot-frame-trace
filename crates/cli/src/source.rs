@@ -10,24 +10,16 @@ use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use polkadot_frame_trace_decode::Metadata;
 
+pub const PROOF_CONCURRENCY: u8 = 8;
+pub const FOLLOW_PROOF_CONCURRENCY: u8 = 16;
+
 /// Arguments that select the block to trace.
 #[derive(Args)]
-#[command(group(ArgGroup::new("source").required(true).args(["rpc", "offline", "from_file", "from_json"])))]
+#[command(group(ArgGroup::new("source").required(true).args(["rpc", "offline", "from_json"])))]
 pub struct SourceArgs {
-    /// Recorded `state_traceBlock` response (JSON-RPC envelope or bare result).
-    #[arg(
-        long,
-        value_name = "FILE",
-        conflicts_with_all = ["rpc", "offline", "from_json"]
-    )]
-    pub from_file: Option<PathBuf>,
     /// Read saved block --json output without replay.
-    #[arg(long, value_name = "FILE", conflicts_with_all = ["rpc", "offline", "from_file", "save", "metadata", "block"])]
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["rpc", "offline", "save", "block"])]
     pub from_json: Option<PathBuf>,
-    /// Runtime metadata of the block's runtime: SCALE bytes (`.scale`), or hex as returned by
-    /// `state_getMetadata` (`.hex`, or the JSON-RPC response).
-    #[arg(long, value_name = "FILE", requires = "from_file", conflicts_with_all = ["rpc", "offline", "from_json"])]
-    pub metadata: Option<PathBuf>,
     /// Node RPC endpoint, for example wss://westend-asset-hub-rpc.polkadot.io.
     #[arg(
         long,
@@ -37,34 +29,28 @@ pub struct SourceArgs {
     )]
     pub rpc: Option<String>,
     /// Block number, hash, `best` or `finalized` to trace with --rpc.
-    #[arg(long, value_name = "NUMBER|HASH|best|finalized", requires = "rpc", conflicts_with_all = ["from_file", "from_json", "offline"])]
+    #[arg(long, value_name = "NUMBER|HASH|best|finalized", requires = "rpc", conflicts_with_all = ["from_json", "offline"])]
     pub block: Option<String>,
     /// Replay a saved artifact with no network.
     #[arg(long, value_name = "DIR", conflicts_with = "block")]
     pub offline: Option<PathBuf>,
     /// Save the replay context and proofs for offline use.
-    #[arg(long, value_name = "DIR", conflicts_with = "from_file")]
+    #[arg(long, value_name = "DIR")]
     pub save: Option<PathBuf>,
-    /// Maximum concurrent RPC requests (1–64; up to 32 proof keys per request).
-    #[arg(long, default_value_t = 8, requires = "rpc", conflicts_with_all = ["from_file", "from_json", "offline"], value_parser = clap::value_parser!(u8).range(1..=64))]
-    pub proof_concurrency: u8,
     /// Longest wait in seconds for one RPC response; each request gets four tries.
-    #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = rpc_timeout, requires = "rpc", conflicts_with_all = ["from_file", "from_json", "offline"])]
+    #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = rpc_timeout, requires = "rpc", conflicts_with_all = ["from_json", "offline"])]
     pub rpc_timeout: Duration,
     /// Persistent authenticated proof nodes and compiled Wasm cache directory.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["from_file", "from_json"])]
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["from_json"])]
     pub cache_dir: Option<PathBuf>,
     /// Disk cache limit in bytes; runtime code in use is kept.
-    #[arg(long, default_value_t = 1073741824, conflicts_with_all = ["from_file", "from_json"])]
+    #[arg(long, default_value_t = 1073741824, conflicts_with_all = ["from_json"])]
     pub cache_max_bytes: u64,
-    /// Allow unverified metadata from the node or saved replay.
-    #[arg(long = "unauthenticated-metadata", alias = "rpc-metadata-fallback", conflicts_with_all = ["from_file", "from_json"])]
-    pub rpc_metadata_fallback: bool,
     /// Execute this Wasm instead of the authenticated :code, for example the same runtime
     /// built with `with-tracing`. Bypasses the code-hash check. Labelled on stderr, in JSON
     /// and in OTLP. Warns when its runtime version differs from the chain's. Cannot be
     /// combined with --save.
-    #[arg(long, value_name = "WASM", conflicts_with_all = ["from_file", "from_json", "save"])]
+    #[arg(long, value_name = "WASM", conflicts_with_all = ["from_json", "save"])]
     pub runtime_override: Option<PathBuf>,
 }
 
@@ -205,7 +191,6 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
                         args.cache_dir.as_deref(),
                         args.cache_max_bytes,
                     )?
-                    .with_rpc_metadata_fallback(args.rpc_metadata_fallback)
                     .with_runtime_override(runtime_override),
                 )
             })
@@ -215,18 +200,12 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
             })?;
         return replay_loaded(replay, args.save.as_deref());
     }
-    match (&args.from_file, &args.rpc) {
-        (Some(trace), _) => file::load(trace, args.metadata.as_deref()),
-        (None, Some(url)) => {
-            let rpc = rpc(
-                url,
-                args.proof_concurrency,
-                args.rpc_timeout,
-                Default::default(),
-            )
-            .inspect_err(|_| {
-                say!("root check: NOT VERIFIED; RPC calls: 0");
-            })?;
+    match &args.rpc {
+        Some(url) => {
+            let rpc = rpc(url, PROOF_CONCURRENCY, args.rpc_timeout, Default::default())
+                .inspect_err(|_| {
+                    say!("root check: NOT VERIFIED; RPC calls: 0");
+                })?;
             let replay = polkadot_frame_trace_replay::online_with_session(
                 &rpc,
                 args.block.as_deref().unwrap_or_default(),
@@ -234,7 +213,6 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
                     args.cache_dir.as_deref(),
                     args.cache_max_bytes,
                 )?
-                .with_rpc_metadata_fallback(args.rpc_metadata_fallback)
                 .with_runtime_override(runtime_override),
             )
             .inspect_err(|_| {
@@ -242,57 +220,10 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
             })?;
             replay_loaded(replay, args.save.as_deref())
         }
-        (None, None) => bail!("pass --rpc, --offline or --from-file"),
+        None => bail!("pass --rpc or --offline"),
     }
 }
 
-mod file {
-    use super::*;
-
-    pub fn load(trace: &Path, metadata: Option<&Path>) -> Result<Loaded> {
-        let json = std::fs::read_to_string(trace)
-            .with_context(|| format!("reading {}", trace.display()))?;
-        let trace_path = trace;
-        let trace = polkadot_frame_trace_model::rpc::parse_trace_block(&json)
-            .with_context(|| format!("parsing {}", trace.display()))?;
-        let metadata = metadata.map(load_metadata).transpose()?.map(Arc::new);
-        Ok(Loaded {
-            traced: polkadot_frame_trace_model::TracedBlock::from_trace(&trace)
-                .with_context(|| format!("converting trace from {}", trace_path.display()))?,
-            metadata,
-            block_number: None,
-            execution: None,
-            runtime_override: None,
-        })
-    }
-
-    /// Accepts SCALE bytes (starting with the `meta` magic), a hex string (with or without
-    /// `0x`), or a JSON-RPC response whose `result` is that hex string.
-    fn load_metadata(path: &Path) -> Result<Metadata> {
-        let context = || format!("reading metadata from {}", path.display());
-        let raw = std::fs::read(path).with_context(context)?;
-        if raw.starts_with(b"meta") {
-            return Metadata::from_bytes(&raw).with_context(context);
-        }
-        let text = String::from_utf8(raw)
-            .context("metadata is neither SCALE bytes nor text")
-            .with_context(context)?;
-        let text = text.trim();
-        let hex = if text.starts_with('{') {
-            let value: serde_json::Value = serde_json::from_str(text).with_context(context)?;
-            value["result"]
-                .as_str()
-                .context("no string `result` in the JSON")
-                .with_context(context)?
-                .to_owned()
-        } else {
-            text.to_owned()
-        };
-        Metadata::from_hex(&hex).with_context(context)
-    }
-}
-
-/// Both block and summary consume the same faithful measured result.
 /// The decoded metadata of the last few runtimes. `follow` and `report` replay many blocks of
 /// one runtime: they decode its metadata once, not once per block.
 fn decoded(hex: &str) -> std::result::Result<Arc<Metadata>, polkadot_frame_trace_decode::Error> {

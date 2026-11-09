@@ -14,7 +14,7 @@ In Jaeger, phases are children of the block span. The post-inherent hooks may in
 | `post inherents (on_poll)` | Hooks such as `on_poll`, after the inherents. They run inside the first non-inherent extrinsic. Without one, they form a separate phase before finalization. |
 | `finalization` | `on_idle` hooks run if weight remains and no multi-block migration is active. Every pallet's `on_finalize` hook follows. Final checks run last. |
 
-Here is block #4 of the People fixture as `summary` prints it:
+Here is block #4 of the People fixture as `block` prints it:
 
 ```text
 ┌──────────────────────────────────────────────────┬────────────┬───────┬────────┬─────────────┬─────────────────┬──────────────┐
@@ -60,6 +60,6 @@ The group names appear in the **Phase shares** table:
 
 When the runtime is built with tracing, each hook is its own span inside its phase.
 The span name is the hook and the pallet, for example `on_initialize: Balances`.
-The **Hooks** table in `summary` and `report` ranks them.
+The **Hooks** table in `block` and `report` ranks them.
 Without tracing, hook storage operations sit directly in the phase.
 See [See runtime calls inside extrinsics](../guides/see-runtime-calls.md).

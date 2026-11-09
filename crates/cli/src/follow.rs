@@ -570,7 +570,7 @@ fn follow(args: FollowArgs) -> Result<()> {
     })?;
     let rpc = source::rpc(
         &args.rpc,
-        args.proof_concurrency,
+        source::FOLLOW_PROOF_CONCURRENCY,
         args.rpc_timeout,
         cancel.clone(),
     )?;
@@ -584,8 +584,7 @@ fn follow(args: FollowArgs) -> Result<()> {
         .transpose()
         .context("--otlp")?;
     let session =
-        ReplaySession::with_cache_max_bytes(args.cache_dir.as_deref(), args.cache_max_bytes)?
-            .with_rpc_metadata_fallback(args.rpc_metadata_fallback);
+        ReplaySession::with_cache_max_bytes(args.cache_dir.as_deref(), args.cache_max_bytes)?;
     let capacity = queue_capacity(args.workers);
     let (send, receive) = mpsc::sync_channel::<Job>(capacity);
     let (events, completed) = mpsc::channel();

@@ -1,7 +1,7 @@
 # Find the heaviest storage items
 
 "Heaviest" can mean three things: most [proof bytes](../concepts/proof-bytes.md), most storage operations, or most storage time.
-`summary` ranks one block by proof bytes.
+`block` ranks one block by proof bytes.
 `report` ranks one or many blocks by any of the three.
 
 ## Rank by proof bytes
@@ -9,7 +9,7 @@
 Run this from the `polkadot-frame-trace` directory:
 
 ```sh
-polkadot-frame-trace summary --offline fixtures/replay/people-traced --top 5
+polkadot-frame-trace block --offline fixtures/replay/people-traced --top 5
 ```
 
 ```text

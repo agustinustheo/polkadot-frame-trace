@@ -81,7 +81,7 @@ Your numbers will be different, because the chain has new blocks.
 | --- | --- |
 | The last K finalized blocks | `--rpc <url> --last 10` |
 | A range of finalized blocks | `--rpc <url> --from 18563569 --to 18563608` |
-| Saved `block --json` files | `report a.json b.json`, or `--from-json a.json` repeated |
+| Saved `block --json` files | `report a.json b.json` |
 
 A range can hold up to 10,000 blocks.
 It must start after the genesis block and end at or before the latest finalized block.
@@ -93,8 +93,7 @@ Saved files need no network.
 | --- | --- |
 | `--top N` | Rows per table in the terminal. JSON always has every row. |
 | `--sort-by proof\|ops\|time` | Rank items, extrinsics and hooks by proof bytes, operations or storage time. |
-| `--concurrency N` | Blocks replayed at once, 1 to 4. |
-| `--proof-concurrency N` | RPC requests at once, shared by all blocks. |
+| `--workers N` | Blocks replayed at once, 1 to 4. |
 | `--cache-dir DIR` | Keep a [disk cache](../reference/commands.md#disk-cache) of downloaded state and compiled runtimes between blocks and runs. |
 | `--json FILE` | Write the full report as JSON. `-` writes it to stdout and the tables to stderr. |
 
