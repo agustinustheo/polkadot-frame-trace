@@ -126,22 +126,4 @@ polkadot-frame-trace --version
 polkadot-frame-trace 0.1.0
 ```
 
-Then replay a block from a local [People chain](../reference/glossary.md#people-chain) that is saved in the repository. It needs no network.
-If you installed a binary, clone the repository first with `git clone https://github.com/agustinustheo/polkadot-frame-trace`.
-Run this from the `polkadot-frame-trace` directory:
-
-```sh
-polkadot-frame-trace block --offline fixtures/replay/people-transfer
-```
-
-```text
-replay #2: loading runtime and preparing state
-root check: PASS; RPC calls: 0 (timed replay: 0); execution proof: 6479 bytes
-fetching state #2: 0 proof request rounds; 0 RPC calls
-state root: computed 0xa33960d3b1aadccf9197e0a77aebfea4075457c02800658639eb20fd5c6012c9; header 0xa33960d3b1aadccf9197e0a77aebfea4075457c02800658639eb20fd5c6012c9
-```
-
-`root check: PASS` means the replay reached the same state as the chain.
-[What a replay proves](../concepts/what-a-replay-proves.md) explains each line.
-
 Next: [Your first trace in Jaeger](first-trace.md).

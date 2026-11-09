@@ -5,7 +5,7 @@ TraceQL is Tempo's query language: each query picks spans by their attributes.
 Every query below was run against block #4 of the People fixture, and the count next to it is the real result.
 
 You need traces in Tempo.
-[Send traces to Grafana](send-traces-to-grafana.md) sets that up in two commands.
+[Send traces to Grafana](send-traces.md#grafana) sets that up in two commands.
 To get the same counts, send only the fixture block:
 
 ```sh
@@ -69,7 +69,7 @@ Result: 34 spans.
 
 ## Repeated reads
 
-**Every repeated read.** Reads of a key already read in the same [phase](../concepts/phases.md). See [Find repeated reads](find-repeated-reads.md).
+**Every repeated read.** Reads of a key already read in the same [phase](../concepts/phases.md). See [Find repeated reads](read-the-tables.md#find-repeated-reads).
 
 ```text
 { span.frame.storage.duplicate_read = true }

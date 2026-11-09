@@ -62,4 +62,4 @@ polkadot-frame-trace prints a warning that starts with
 Use the execution proof for the block total in that case.
 The summary line then ends with `<bytes> B counted more than once`.
 
-See [Measure proof size](../guides/measure-proof-size.md) for a worked example.
+See [Measure proof size](../guides/read-the-tables.md#measure-proof-size) for a worked example.

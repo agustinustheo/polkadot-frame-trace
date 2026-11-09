@@ -59,4 +59,4 @@ That line says block #4 made 312 reads.
 231 came from the cache.
 81 went to the trie: 47 found their path already in the proof and 34 added new nodes.
 
-[Find repeated reads](../guides/find-repeated-reads.md) uses these numbers.
+[Find repeated reads](../guides/read-the-tables.md#find-repeated-reads) uses these numbers.

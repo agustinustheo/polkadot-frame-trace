@@ -4,6 +4,7 @@ This page explains one trace on screen, region by region.
 It uses block #4 of a [People chain](../reference/glossary.md#people-chain), which ships with the repository.
 Its runtime was built with tracing, so you also see runtime calls such as `set`.
 
+If you installed a binary, clone the repository first with `git clone https://github.com/agustinustheo/polkadot-frame-trace`.
 Send it to Jaeger from the `polkadot-frame-trace` directory:
 
 ```sh
@@ -108,7 +109,7 @@ Click the block row or a phase row to see its totals:
 
 ## Next steps
 
-- [Find repeated reads](../guides/find-repeated-reads.md) uses the same block to explain a read made 48 times.
+- [Find repeated reads](../guides/read-the-tables.md#find-repeated-reads) uses the same block to explain a read made 48 times.
 - [Cache or trie](../concepts/cache-or-trie.md) explains the three origins with three real reads.
 
 ## Clean up

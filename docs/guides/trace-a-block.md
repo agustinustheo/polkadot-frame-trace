@@ -44,7 +44,7 @@ To see tables in the terminal instead, run `block` without `--otlp` or `--json`:
 polkadot-frame-trace block --rpc wss://westend-asset-hub-rpc.polkadot.io --block finalized
 ```
 
-[Find the heaviest storage items](find-heaviest-items.md) explains its tables.
+[Find the heaviest storage items](read-the-tables.md#find-the-heaviest-storage-items) explains its tables.
 
 ## Choose an endpoint
 

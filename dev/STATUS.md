@@ -13,8 +13,8 @@ polkadot-frame-trace replays blocks and runtime API calls from safe RPC, with th
 
 ## Decisions for you
 
-1. **Constants (spec phase 4).** A macro prototype on branch `flight/constants-tracing` (commit d21a382) was dropped: it needs runtime source changes and a `with-tracing` build. Inline `ConstU32` values stayed invisible. The other option lists constant values from metadata per pallet, but cannot show which ones a block read. See [SPEC.md](SPEC.md#phases).
-2. **PolkaMeter integration (spec phase 5).** Attach a block trace to each load-test step. This changes the PolkaMeter repo.
+1. **Constants.** A macro prototype on branch `flight/constants-tracing` (commit d21a382) was dropped: it needs runtime source changes and a `with-tracing` build. Inline `ConstU32` values stayed invisible. The other option lists constant values from metadata per pallet, but cannot show which ones a block read.
+2. **PolkaMeter integration.** Attach a block trace to each load-test step. This changes the PolkaMeter repo.
 3. **First release, v0.1.0.** The release workflow is ready. Follow [RELEASING.md](RELEASING.md).
 
 ## Upstream

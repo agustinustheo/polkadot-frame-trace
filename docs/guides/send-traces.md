@@ -1,23 +1,8 @@
-# Choose where to send traces
+# Send traces to Jaeger or Grafana
 
-polkadot-frame-trace has two outputs: OpenTelemetry traces over OTLP/HTTP, and JSON files.
-`block`, `call` and `follow` send traces with `--otlp`.
-`block` and `call` write JSON with `--json`.
-
-## Pick a trace viewer
-
-The repository has a ready Docker Compose setup for each of these, in [`examples/`](https://github.com/agustinustheo/polkadot-frame-trace/tree/main/examples).
-
-| Setup | Use it when | Download | Ready in | Guide |
-| --- | --- | --- | --- | --- |
-| Grafana LGTM | You want a dashboard and TraceQL search. Parity uses this image for its own local tracing. Recommended. | 535 MB | about 3 s | [Send traces to Grafana](send-traces-to-grafana.md) |
-| Grafana Alloy, Tempo and Grafana | You want the shape of a cluster, or already run Alloy or a Collector. | about 690 MB | about 3 s | [Send traces through Grafana Alloy to Tempo](send-traces-through-alloy.md) |
-| Jaeger | You want to look at one trace, fast. | 51 MB | under 1 s | [Jaeger](#jaeger), below |
-
-Download sizes are compressed images. Start times were measured on a laptop once the images were downloaded, until the receiver and the web page answered.
-
-All three listen for OTLP/HTTP on port 4318, so bare `--otlp` works with each.
-Run one at a time.
+Open a block's storage reads and writes in Jaeger, or use Grafana for a dashboard and TraceQL search.
+You need polkadot-frame-trace [installed](../getting-started/install.md), Docker, and a copy of the repository.
+Run one viewer at a time: both receive OTLP/HTTP on port 4318.
 
 ## Jaeger
 
@@ -39,16 +24,106 @@ Open <http://127.0.0.1:16686> and pick the service `polkadot-frame-trace`.
 [Your first trace](../getting-started/first-trace.md) shows what you will see.
 Stop it with `docker compose down` from `examples/jaeger`.
 
+## Grafana
+
+### Start Grafana
+
+Run this from the `polkadot-frame-trace` directory:
+
+```sh
+cd examples/grafana-lgtm
+docker compose up -d
+```
+
+> **Warning:** Grafana opens without a login, as a viewer that can use Explore. Use this on your own machine only.
+
+### Send a trace
+
+Go back to the `polkadot-frame-trace` directory and replay the People block that ships with the repository:
+
+```sh
+cd ../..
+polkadot-frame-trace block --offline fixtures/replay/people-traced --otlp
+```
+
+```text
+...
+exported 633 spans to http://127.0.0.1:4318
+```
+
+`exported 633 spans` means Grafana's collector accepted every [span](../reference/glossary.md#span-and-trace).
+The trace can be searched about a second later.
+
+### Open the dashboard
+
+Open <http://127.0.0.1:3000>.
+The `polkadot-frame-trace` dashboard opens.
+It shows every block you traced in the last hour.
+
+![The polkadot-frame-trace dashboard in Grafana with two blocks. Callouts mark the totals, the block table and six panels.](../images/grafana-dashboard.png)
+
+1. Totals for the time range: blocks, storage operations, reads that added [proof bytes](../concepts/proof-bytes.md), repeated reads, proof bytes and writes.
+2. One row per block. Click a span ID to open that block's trace.
+3. The [pallets](../reference/glossary.md#pallet) whose keys were read or written most.
+4. The storage items that added the most proof bytes. `<unknown>` holds operations without a storage item, such as `storage_root`.
+5. Keys read again in the same [phase](../concepts/phases.md). See [Find repeated reads](read-the-tables.md#find-repeated-reads).
+6. Where reads (`get`, `exists`, `hash`) were answered: [cache or trie](../concepts/cache-or-trie.md). Writes have no origin, so they are left out. A read whose origin was not recorded shows as `unknown`.
+7. Every read that went to the trie and added proof bytes, largest first.
+8. Storage operations that took more than 20 µs, slowest first. These times come from the replay on your machine, not from a node. See [Timings](../concepts/timings.md).
+
+The numbers and bar charts can take up to a minute to include a new block.
+The tables show it at once.
+Keep the time range at 3 hours or less: Tempo refuses longer ranges for the counts and bar charts.
+
+### Open a trace
+
+In the **Recent blocks** table, click the span ID of `block #4 (0x06618995…0637)`.
+Or go to **Explore**, pick **Tempo**, choose **TraceQL**, paste the trace ID and press **Run query**.
+
+To get the view below, click the double up arrow next to **Service & Operation** to collapse everything.
+Then open `block #4`, `extrinsic 2: Utility.batch`, `apply_extrinsic`, `batch` and the first `transfer_keep_alive`.
+Click the first read of `System::Account(5FHn…94ty)`, then **Span attributes**.
+
+![The People block trace in Grafana. Callouts mark the block, a phase, the runtime calls, a storage read, its origin, its proof bytes and its duration.](../images/grafana-trace.png)
+
+1. The block span, with its number and a short hash.
+2. A phase: extrinsic 2, a `Utility.batch`.
+3. Runtime calls: `batch`, then the first `transfer_keep_alive`. You see these because this block's runtime was built with tracing. See [See runtime calls inside extrinsics](see-runtime-calls.md).
+4. A read of Bob's account, `System::Account(5FHn…94ty)`.
+5. `frame.storage.origin`: `trie (new)`. The read went to the chain state, and its trie nodes were not in the proof yet.
+6. `frame.storage.proof_bytes`: this read added 166 bytes to the block's proof.
+7. The read took 6.88 µs in the replay on your machine.
+
+[Span names and attributes](../reference/spans.md) lists every attribute.
+
+### Search with TraceQL
+
+[Find storage problems with TraceQL](query-traces-in-grafana.md) has queries checked against this block.
+
+### Stop
+
+From `examples/grafana-lgtm`:
+
+```sh
+docker compose down
+```
+
+The container keeps traces inside itself, so stopping it deletes them.
+
+### Use your own Grafana
+
+Import `examples/grafana-lgtm/dashboards/polkadot-frame-trace.json` into any Grafana that has a Tempo data source with the UID `tempo`.
+The counts and bar charts use TraceQL metrics, so Tempo must answer metrics queries.
+The LGTM image does.
+
 ## Any other OTLP receiver
 
 `--otlp` takes the base URL of an OTLP/HTTP receiver.
 polkadot-frame-trace adds `/v1/traces` unless the URL already ends with it.
 Output shows only the scheme, host and port of the URL.
-Both of these send to the same place:
 
 ```sh
 polkadot-frame-trace block --offline fixtures/replay/people-transfer --otlp http://127.0.0.1:4318
-polkadot-frame-trace block --offline fixtures/replay/people-transfer --otlp http://127.0.0.1:4318/v1/traces
 ```
 
 ```text
@@ -57,66 +132,23 @@ exported 428 spans to http://127.0.0.1:4318
 ```
 
 The receiver must accept OTLP over HTTP with protobuf, usually on port 4318.
-Headers, such as an authorization header, come from `OTEL_EXPORTER_OTLP_HEADERS`.
-See [Send traces through Grafana Alloy to Tempo](send-traces-through-alloy.md#send-to-an-alloy-or-collector-you-already-run).
+For headers and timeouts, see [environment variables](../reference/commands.md#environment-variables).
+
+### Headers and authentication
+
+Headers come from `OTEL_EXPORTER_OTLP_HEADERS`, as `key=value` pairs separated by commas.
+Values are URL-decoded, so write a space as `%20`.
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` replaces it when both are set.
+
+A user name and password inside the URL, such as `https://user:pass@host`, are not sent.
+Client certificates are not supported.
 
 Every trace uses the service name `polkadot-frame-trace`.
 Search by span name, such as `extrinsic 2: Utility.batch`, or by attribute, such as `frame.block.number`.
 [Span names and attributes](../reference/spans.md) lists them all.
 
-## What `--otlp` sends
-
-| Command | Traces |
-| --- | --- |
-| `block` | One trace per block, rooted at `block #<number> (<short hash>)`. |
-| `call` | One trace per call, rooted at `call <method> at #<number>`. |
-| `follow` | One trace per block, as each block is traced. |
-
-`block` and `call` wait for the receiver to answer, and fail if it rejects any span.
-A receiver may still drop data later, for example through sampling or retention.
-
-If the receiver cannot be reached:
-
-```text
-Error: exporting to http://127.0.0.1:4999: 428 of 428 spans were not exported (first error: Operation failed: HTTP export failed: network error)
-```
-
-If it answers but rejects some spans:
-
-```text
-Error: exporting to http://127.0.0.1:4319: 5 of 428 spans rejected by the receiver: span attribute limit exceeded
-```
-
-`block` and `call` exit with code 1 in both cases. `follow` retries failed requests and counts rejected traces without stopping.
-
-See [Troubleshooting](../troubleshooting.md#n-of-m-spans-were-not-exported).
-
-## JSON
-
-```sh
-polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.json
-```
-
-`--json -` writes to stdout.
-With `call --json -`, the tables go to stderr so stdout stays valid JSON.
-
-Use JSON to:
-
-- keep a block's trace without a trace viewer;
-- read it again with `block --from-json block.json`;
-- add up many blocks with `report block-1.json block-2.json`;
-- load it into your own scripts.
-
-[JSON output](../reference/json.md) describes the fields.
-
-## Both at once
-
-`--otlp` and `--json` can be combined in one run, together with `--save`:
-
-```sh
-polkadot-frame-trace block --rpc wss://westend-asset-hub-rpc.polkadot.io --block finalized \
-  --otlp --json block.json --save saved-block
-```
+If an export fails, see [Troubleshooting](../troubleshooting.md#n-of-m-spans-were-not-exported).
+For files instead of a trace viewer, see [JSON output](../reference/json.md).
 
 ## Before you share
 

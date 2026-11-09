@@ -5,15 +5,6 @@ polkadot-frame-trace records every storage call during the replay.
 At the end, the **root check** confirms that the replay produced the state root in the block header.
 If it did, the trace shows what the block really did to storage.
 
-```mermaid
-flowchart LR
-  A[RPC node] -->|block and state proofs| B[polkadot-frame-trace checks every proof]
-  B --> C[Your machine runs the block]
-  C --> D{Root check}
-  D -->|same root as the header| E[Trace to OTLP or JSON]
-  D -->|different root| F[Error, nothing exported]
-```
-
 ## The steps
 
 1. **Fetch the block.** polkadot-frame-trace fetches the block and its parent header with safe RPC methods.
@@ -26,6 +17,7 @@ flowchart LR
 4. **Root check.** The runtime calculates the new state root.
    polkadot-frame-trace compares it with the root in the block header, and prints both roots.
 5. **Export.** polkadot-frame-trace sends the trace to OTLP or writes JSON only after a pass.
+   A different root causes an error, with nothing exported.
 
 Before the timed replay, polkadot-frame-trace fetches the state the block needs.
 To find out which state that is, it may run the block more than once.

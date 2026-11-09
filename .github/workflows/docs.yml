@@ -6,16 +6,12 @@ on:
     paths:
       - book.toml
       - docs/**
-      - mermaid.min.js
-      - mermaid-init.js
       - .github/workflows/docs.yml
   pull_request:
     branches: [main]
     paths:
       - book.toml
       - docs/**
-      - mermaid.min.js
-      - mermaid-init.js
       - .github/workflows/docs.yml
   workflow_dispatch:
 
@@ -45,18 +41,6 @@ jobs:
         uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: mdbook@0.4.52
-
-      # mdbook-mermaid 0.16.0 has no prebuilt binary, so build it once and cache it.
-      - name: Cache mdbook-mermaid
-        id: mermaid-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/mdbook-mermaid
-          key: mdbook-mermaid-0.16.0-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Build mdbook-mermaid
-        if: steps.mermaid-cache.outputs.cache-hit != 'true'
-        run: cargo +1.93.0 install mdbook-mermaid --locked --version 0.16.0
 
       - name: Build documentation
         run: mdbook build

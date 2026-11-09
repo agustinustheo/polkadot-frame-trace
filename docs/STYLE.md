@@ -33,7 +33,8 @@ Sentry's docs are the model. The README shows the result. The first guide ends w
    Open with the fact, then the step. No greetings, no sign-offs, no closing pitch.
    Use plain verbs (run, keep, remove, fail, pass) and no hype words such as "robust", "seamless" or "leverage".
    Bullets only for real lists, tables only for numbers or lookups. No bold-label stacks.
-6. **No internal names.** Never write E1, E2, oracle, discovery run, measured run, ProofDb, overlay, backend_warm, synthetic, schema internals, crate names, or commit hashes in user pages. Use the plain words from rule 3. Raw JSON values (`overlay`, `backend_cold`) appear only in the JSON reference.
+6. **No internal names.** User pages must not use E1, E2, oracle, discovery run, measured run, ProofDb, overlay, backend_warm, or synthetic.
+   Do not use schema internals, crate names or commit hashes. Use the plain words from rule 3. Raw JSON values (`overlay`, `backend_cold`) appear only in the JSON reference.
 7. **Defaults and limits live in reference tables,** not in prose. A guide says "raise `--rpc-timeout` for a slow node" and links to the table.
 8. **Hide mechanisms the reader doesn't act on.** How proofs are fetched, predicted and cached belongs in one concept page at most.
 9. **Commands are copyable.** Say where to run them. Use `polkadot-frame-trace` as the command name; Getting started shows once how to install it. Placeholders look like `<block-number>`.
@@ -41,7 +42,8 @@ Sentry's docs are the model. The README shows the result. The first guide ends w
 11. **Screenshots have callouts.** Every image is annotated with numbered labels that the text refers to. Terminal output is text, not images.
 12. **No filler.** No "simply", "just", "easily", "note that", "it is important to", "in this guide we will". Headings in sentence case.
 13. **Only document what exists.** Every flag and output in the docs must match `polkadot-frame-trace <command> --help` and a real run.
-14. **Simplified Technical English for hard concepts.** Use ASD-STE100 rules on concept pages and wherever an idea is hard: what a replay proves, cache and trie, proof bytes, the root check, phases, runtime upgrades, and `follow`'s retries and stop.
+14. **Simplified Technical English for hard concepts.** Use ASD-STE100 rules on concept pages and wherever an idea is hard.
+    This includes replays, cache and trie, proof bytes, the root check, phases, runtime upgrades, and `follow`'s retries and stop.
     - Procedures: at most 20 words per sentence, one instruction per sentence, imperative and active voice.
     - Descriptions: at most 25 words per sentence.
     - One simple verb, not a phrasal verb or an idiom: "remove", not "get rid of"; "find", not "look up".
@@ -52,4 +54,4 @@ Sentry's docs are the model. The README shows the result. The first guide ends w
 
 ## Building
 
-Run `mdbook build` from the repository root. It needs `mdbook` 0.4.52 and `mdbook-mermaid` 0.16.0. The Mermaid assets `mermaid.min.js` and `mermaid-init.js` are committed, so do not run `mdbook-mermaid install` again unless you upgrade it.
+Run `mdbook build` from the repository root. It needs `mdbook` 0.4.52.

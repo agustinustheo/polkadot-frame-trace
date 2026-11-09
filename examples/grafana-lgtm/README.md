@@ -16,53 +16,5 @@ This example adds a `polkadot-frame-trace` dashboard.
 | `provisioning/polkadot-frame-trace.yaml` | Tells Grafana to load the dashboard. |
 | `dashboards/polkadot-frame-trace.json` | The dashboard. |
 
-> **Warning:** Grafana opens without a login, as a viewer that can use Explore. Use this on your own machine only.
-
-## Start
-
-Run this from this directory:
-
-```sh
-docker compose up -d
-```
-
-The first start downloads a 535 MB image. After that, Grafana and Tempo are ready in about 3 seconds.
-
-## Send a trace
-
-From the `polkadot-frame-trace` directory:
-
-```sh
-polkadot-frame-trace block --offline fixtures/replay/people-traced --otlp
-```
-
-```text
-...
-exported 633 spans to http://127.0.0.1:4318
-```
-
-The trace can be searched about a second later.
-
-## Open it
-
-- <http://127.0.0.1:3000> opens the `polkadot-frame-trace` dashboard.
-- **Explore** → **Tempo** runs TraceQL queries.
-  [Find storage problems with TraceQL](https://agustinustheodorus.com/polkadot-frame-trace/guides/query-traces-in-grafana.html) has ready ones.
-
-To check from a terminal that the trace arrived:
-
-```sh
-curl -s 'http://127.0.0.1:3000/api/datasources/proxy/uid/tempo/api/search?tags=service.name%3Dpolkadot-frame-trace' | grep -o '"rootTraceName":"[^"]*"'
-```
-
-```text
-"rootTraceName":"block #4 (0x06618995…0637)"
-```
-
-## Stop
-
-```sh
-docker compose down
-```
-
-The container keeps traces inside itself, so stopping it deletes them.
+[Send traces to Grafana](../../docs/guides/send-traces.md#grafana) shows how to start it, send a trace and open the dashboard.
+[Find storage problems with TraceQL](../../docs/guides/query-traces-in-grafana.md) has ready queries.

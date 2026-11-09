@@ -69,7 +69,7 @@ Later blocks reused state the earlier blocks fetched in memory.
   Each block reads 10 new ledgers and nominators, and those reads add new trie nodes to the proof.
 - **Repeats go to the trie.** `VoterList::ListNodes` was read 150 times from the trie already in proof.
   No write came first, so none could come from the cache.
-  See [Find repeated reads](find-repeated-reads.md).
+  See [Find repeated reads](read-the-tables.md#find-repeated-reads).
 - **Extrinsics** shows the median and the 95th percentile per extrinsic type.
   `Timestamp.set` added 0 proof bytes in every block: earlier phases had already touched its nodes.
 

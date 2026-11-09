@@ -1,6 +1,6 @@
 //! OpenTelemetry export for polkadot-frame-trace.
 //!
-//! One trace per block, following the trace model in `dev/SPEC.md`:
+//! One trace per block, following the trace model in `docs/reference/spans.md`:
 //!
 //! ```text
 //! block 0xabc…                                     root span, block totals

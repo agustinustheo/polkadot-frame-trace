@@ -11,17 +11,13 @@
 # Guides
 
 - [Trace a block from any node](guides/trace-a-block.md)
-- [Find repeated reads](guides/find-repeated-reads.md)
-- [Find the heaviest storage items](guides/find-heaviest-items.md)
-- [Measure proof size](guides/measure-proof-size.md)
+- [Read the tables](guides/read-the-tables.md)
 - [Trace a runtime API call](guides/trace-a-runtime-api-call.md)
 - [See runtime calls inside extrinsics](guides/see-runtime-calls.md)
 - [Analyse many blocks](guides/analyse-many-blocks.md)
 - [Follow new blocks](guides/follow-new-blocks.md)
 - [Save a block and replay it offline](guides/save-and-replay.md)
-- [Choose where to send traces](guides/send-traces.md)
-  - [Send traces to Grafana](guides/send-traces-to-grafana.md)
-  - [Send traces through Grafana Alloy to Tempo](guides/send-traces-through-alloy.md)
+- [Send traces to Jaeger or Grafana](guides/send-traces.md)
 - [Find storage problems with TraceQL](guides/query-traces-in-grafana.md)
 
 # Concepts

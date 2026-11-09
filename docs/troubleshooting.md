@@ -98,14 +98,12 @@ Related messages:
 
 ```text
 Error: reading --runtime-override /tmp/ftdocs/nope.wasm: No such file or directory (os error 2)
-error: the argument '--runtime-override <WASM>' cannot be used with '--save <DIR>'
 ```
 
-The file is not a runtime, does not exist, or you used it with `--save`.
+The file is not a runtime or does not exist.
 polkadot-frame-trace checks the file before it replays anything.
 
 Pass the `.wasm` or `.compact.compressed.wasm` file from the runtime build, under `target/release/wbuild/`.
-Remove `--save` when you use an override.
 See [See runtime calls inside extrinsics](guides/see-runtime-calls.md).
 
 ## `<N> of <M> spans were not exported`
@@ -209,32 +207,16 @@ Error: RPC error: state_getReadProof: overall request deadline exceeded
 This run used `wss://asset-hub-paseo-rpc.n.dwellir.com`.
 
 The node took too long to answer one request.
-`--rpc-timeout` is the wait for one try, 30 seconds by default.
-A request gets at most four tries, with a total deadline of 2 minutes by default.
-The largest answer is the proof of the runtime code, about 2.7 MB.
-Public Westend nodes took 7 to 20 seconds to send it, and this node 25 to 35 seconds.
+Raise [`--rpc-timeout`](reference/commands.md#block) for a slow node.
+[Slow nodes](reference/support.md#slow-nodes) lists measured response times and a run that passed with `--rpc-timeout 120`.
 
-Raise [`--rpc-timeout`](reference/commands.md#block) when one try needs more than 30 seconds.
-This run failed with the old default of 7.5 seconds.
-With `--rpc-timeout 120`, the same command passed:
-
-```text
-root check: PASS; RPC calls: 113 (timed replay: 0); execution proof: 101420 bytes
-```
-
-A slow first run without an error is normal. This line can stay on screen for 20 seconds or more:
+A slow first run without an error is normal:
 
 ```text
 replay #18598757: fetching state (shared limit: 8 concurrent RPC requests)
 ```
 
-polkadot-frame-trace fetches, with proofs, every piece of state the block reads, and compiles the runtime.
-A Westend Asset Hub block needed 64 rounds of requests in [Your first trace](getting-started/first-trace.md).
-To make later runs faster:
-
-- Use a node close to you, or your own node.
-
-Compiled runtimes are kept in `~/.cache/polkadot-frame-trace/wasm`.
+polkadot-frame-trace fetches the state the block reads, checks the proofs, and compiles the runtime.
 
 ## `runtime cache: …; runtimes are compiled again each run`
 
@@ -247,34 +229,6 @@ Replays still work, but runtimes must be compiled again each run.
 
 Make `$XDG_CACHE_HOME` (or `~/.cache`) writable and keep `polkadot-frame-trace` private to the user running the command.
 For systemd, use the cache settings in [Run it as a service](guides/follow-new-blocks.md#5-run-it-as-a-service).
-
-## `failed to lookup address information`
-
-```text
-root check: NOT VERIFIED; RPC calls: 4
-Error: RPC error: chain_getFinalizedHead: http://frame-trace.invalid: error sending request: client error (Connect): dns error: error resolving DNS: failed to lookup address information: nodename nor servname provided, or not known
-```
-
-This run used `--rpc http://frame-trace.invalid --block finalized`, so the first request was `chain_getFinalizedHead`.
-With a block number it would be `chain_getBlockHash`.
-
-The RPC host name does not resolve.
-Check the URL for typos and check your network.
-
-## `the argument '…' cannot be used with '…'`
-
-```text
-error: the argument '--rpc <URL>' cannot be used with '--offline <DIR>'
-
-Usage: polkadot-frame-trace block --block <NUMBER|HASH|best|finalized> <--rpc <URL>|--offline <DIR>|--from-json <FILE>>
-```
-
-Two flags do not work together, so polkadot-frame-trace refuses to run. It does not ignore one of them.
-For example, `--block` applies only to `--rpc`.
-The exit code is 2.
-
-Remove the flag that does not apply to your source.
-[Commands and flags](reference/commands.md) shows which flags go with which source.
 
 ## `range limit is 10000 blocks`
 

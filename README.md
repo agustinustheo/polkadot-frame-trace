@@ -40,52 +40,10 @@ Find the storage items a block reads most, the reads it repeats, and the bytes e
 
 *Block #4 of a People chain in Jaeger. (1) The block, (2) the `Utility.batch` extrinsic and (3) the runtime calls inside it. (4) A read of Bob's account, (5) where it was answered, (6) the bytes it added to the proof and (7) its duration.*
 
-## Highlights
+## Start
 
-- Any node, no changes: safe RPC only, with the parent state as proofs from `state_getReadProof`.
-- Reads from chain state are checked against the parent's [state root](https://agustinustheodorus.com/polkadot-frame-trace/reference/glossary.html#state-root). Cache reads use the block's earlier writes. The [root check](https://agustinustheodorus.com/polkadot-frame-trace/concepts/what-a-replay-proves.html) must pass before anything is exported.
-- The chain's own runtime runs in the Polkadot SDK executor, with signature checks on.
-- Every read and write, in order, with decoded names such as `System::Account(5Grw…)`.
-- For each read: whether the [cache or the trie](https://agustinustheodorus.com/polkadot-frame-trace/concepts/cache-or-trie.html) answered it, and the [proof bytes](https://agustinustheodorus.com/polkadot-frame-trace/concepts/proof-bytes.html) it added.
-- Spans per [phase](https://agustinustheodorus.com/polkadot-frame-trace/concepts/phases.html) and extrinsic, and per runtime call when the runtime is built with [`with-tracing`](https://agustinustheodorus.com/polkadot-frame-trace/guides/see-runtime-calls.html).
-
-## Install
-
-Download the archive for your system from the [latest release](https://github.com/agustinustheo/polkadot-frame-trace/releases/latest). On Linux x86_64:
-
-```sh
-VERSION=0.1.0
-TARGET=x86_64-unknown-linux-gnu
-curl -fsSLO "https://github.com/agustinustheo/polkadot-frame-trace/releases/download/v$VERSION/polkadot-frame-trace-$VERSION-$TARGET.tar.gz"
-curl -fsSLO "https://github.com/agustinustheo/polkadot-frame-trace/releases/download/v$VERSION/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf "polkadot-frame-trace-$VERSION-$TARGET.tar.gz"
-mkdir -p ~/.local/bin && cp "polkadot-frame-trace-$VERSION-$TARGET/polkadot-frame-trace" ~/.local/bin/
-```
-
-Other targets are `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-apple-darwin`. On macOS, check with `shasum -a 256`.
-The Linux binaries need glibc 2.35 or newer.
-[Install](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/install.html) covers nightly builds, your `PATH` and building from source.
-
-## Tour
-
-Start Jaeger first: `docker run -d --rm --name jaeger -p 16686:16686 -p 4318:4318 jaegertracing/jaeger:latest`.
-
-```sh
-RPC=wss://westend-asset-hub-rpc.polkadot.io
-polkadot-frame-trace block --rpc $RPC --block finalized --otlp       # one block, as a trace in Jaeger
-polkadot-frame-trace block --rpc $RPC --block finalized              # a block as tables
-polkadot-frame-trace block --rpc $RPC --block finalized \
-  --save saved-block --json block.json                               # keep it to replay offline
-polkadot-frame-trace block --offline saved-block --otlp              # replay it with no network
-polkadot-frame-trace report --rpc $RPC --last 10                     # the last 10 finalized blocks in one report
-polkadot-frame-trace follow --rpc $RPC --otlp                        # trace each new finalized block
-polkadot-frame-trace call --rpc $RPC --method Core_version --data 0x \
-  --check-state-call                                                 # trace a runtime API call
-```
-
-Open <http://127.0.0.1:16686>, pick the service `polkadot-frame-trace` and click **Find Traces**.
-[Commands and flags](https://agustinustheodorus.com/polkadot-frame-trace/reference/commands.html) lists everything else.
+[Install polkadot-frame-trace](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/install.html), then [open your first trace in Jaeger](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/first-trace.html).
+[Commands and flags](https://agustinustheodorus.com/polkadot-frame-trace/reference/commands.html) lists the commands and outputs.
 
 ### A replay, as you see it
 
@@ -123,26 +81,10 @@ Duplicate reads 203 = cache 177, trie (already in proof) 26, trie (new) 0, unkno
 `root check: PASS` means the replay reached the same state root as the block header.
 Times are measured on your machine, not on the node. The rest of the output ranks storage items, extrinsics and repeated reads.
 
-## Chains
+[What polkadot-frame-trace supports](https://agustinustheodorus.com/polkadot-frame-trace/reference/support.html) lists the chain requirements, tested chains and RPC methods.
 
-Point `--rpc` at a node of any Polkadot SDK chain with Blake2-256 headers and `u32` block numbers.
-For old blocks, use an [archive node](https://agustinustheodorus.com/polkadot-frame-trace/reference/glossary.html#archive-node).
-Every block below passed the root check.
+## Contribute
 
-| Chain | Live, from a public node | Offline, from a saved block |
-| --- | --- | --- |
-| Westend Asset Hub | Finalized blocks with `block`, `report` and `follow`; best blocks with `block`; nightly | #18,558,320 |
-| Westend Asset Hub runtime upgrade | #18,985,169 and #18,985,170, the first on the new code; nightly | |
-| Westend relay chain | The finalized block, nightly; #33,614,892 | |
-| Paseo Asset Hub | | #15,366,850, a contract call with child trie reads and writes |
-| Paseo People Next | 20 blocks with `block` | |
-| A local People chain | | Saved blocks, including a traced runtime |
-
-[What polkadot-frame-trace supports](https://agustinustheodorus.com/polkadot-frame-trace/reference/support.html) lists the chain requirements, the RPC methods it sends and the host functions.
-
-## Build from source
-
-See [Install](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/install.html#build-from-source).
 Docs follow [docs/STYLE.md](https://github.com/agustinustheo/polkadot-frame-trace/blob/main/docs/STYLE.md), and developer notes are in [`dev/`](https://github.com/agustinustheo/polkadot-frame-trace/blob/main/dev/README.md).
 
 ## License

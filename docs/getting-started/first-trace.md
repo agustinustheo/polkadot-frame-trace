@@ -20,10 +20,7 @@ Port 4318 receives traces over OTLP/HTTP, which is where polkadot-frame-trace se
 polkadot-frame-trace block --rpc wss://westend-asset-hub-rpc.polkadot.io --block finalized --otlp
 ```
 
-`--block finalized` picks the newest block the chain has finalized.
-`--block best` picks the newest block the node knows, which may still change.
-A block number or a full block hash also works.
-`--otlp` with no URL sends the trace to `http://127.0.0.1:4318`.
+[Commands and flags](../reference/commands.md#block) lists other block selectors and the OTLP address.
 
 You should see output like this.
 Your block number, byte counts and hashes will be different.

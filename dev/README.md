@@ -1,14 +1,11 @@
 # Internal notes
 
-The project was renamed from frame-trace to polkadot-frame-trace on 7 November 2026. Dated measurements keep the old name.
-
 The pre-project research, experiments E1 and E2, and the upstream bug drafts were removed on 7 November 2026. They are in commit 2e5c243.
 
 Material for people working on polkadot-frame-trace itself. User documentation is in [`docs/`](../docs/README.md).
 
 | Path | What it is |
 | --- | --- |
-| [`SPEC.md`](SPEC.md) | The original design: goals, trace model, crate layout and roadmap. |
 | [`STATUS.md`](STATUS.md) | Known limits, open decisions and upstream bugs. |
 | [`RELEASING.md`](RELEASING.md) | How to cut a release: version bump, changelog, tag, draft release. |
 | [`performance.md`](performance.md) | Current numbers: follow throughput, the memory limit, and how to reproduce them. |
@@ -20,10 +17,9 @@ The replay artifact format is specified in [`crates/replay/ARTIFACT.md`](../crat
 polkadot-frame-trace executes every runtime with one fixed set of host functions: the `HostFunctions`
 tuple in [`crates/replay/src/lib.rs`](../crates/replay/src/lib.rs). It matches a stable2609
 omni-node: `sp_io::SubstrateHostFunctions`, storage proof size, statement store and the
-RFC-163 elliptic curve functions. Executors are built with missing imports disallowed, so a
-runtime that imports anything else fails before it runs, with the error
-`the runtime needs host functions polkadot-frame-trace does not have: <module:name>, ...`
-(see `docs/troubleshooting.md`).
+RFC-163 elliptic curve functions. Executors disallow missing imports.
+A runtime that imports anything else fails before it runs.
+See [Troubleshooting](../docs/troubleshooting.md#the-runtime-needs-host-functions-polkadot-frame-trace-does-not-have).
 
 To support such a chain:
 
@@ -59,7 +55,7 @@ environment variable and falls back to the public endpoint:
 The `FRAME_TRACE_*` variables used by tests, CI and the build version kept their names after the rename: they are internal.
 
 The nightly workflow (`.github/workflows/nightly.yml`) runs all three with the defaults.
-Runtime upgrade blocks and relay chain blocks have no offline fixture, because their runtimes
+Runtime upgrade blocks and relay chain blocks have no offline fixture. Their runtimes
 would add 1.5 to 2.7 MB each to the repository (see
 [`fixtures/replay/README.md`](../fixtures/replay/README.md)). These live tests are their only
 tests, so run them when a change touches runtime loading, the session caches or block

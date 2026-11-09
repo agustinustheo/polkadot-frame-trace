@@ -28,7 +28,7 @@ polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--rpc <URL>` | | Node RPC endpoint: `ws://`, `wss://`, `http://` or `https://`. |
+| `--rpc <URL>` | | Node RPC endpoint. See [supported URLs](support.md#nodes). |
 | `--block <NUMBER\|HASH\|best\|finalized>` | | Block to trace with `--rpc`: a block number, a full hash, `best` (newest) or `finalized` (newest finalized). |
 | `--offline <DIR>` | | Replay a saved block with no network. |
 | `--from-json <FILE>` | | Read saved `block --json` output without replay. |
@@ -43,7 +43,7 @@ Without `--otlp` or `--json`, `block` prints storage summary tables.
 
 It prints the tables **Storage per phase**, **Phase shares**, **Top items by proof bytes** and **Extrinsic distributions**.
 Then **Hooks**, only with runtime spans, and **Duplicate reads per phase**.
-[Find the heaviest storage items](../guides/find-heaviest-items.md) explains the columns.
+[Find the heaviest storage items](../guides/read-the-tables.md#find-the-heaviest-storage-items) explains the columns.
 
 A flag that does not apply to the source fails with exit code 2.
 `--block` and `--rpc-timeout` need `--rpc`.
@@ -123,7 +123,7 @@ polkadot-frame-trace follow --rpc URL --otlp
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--rpc <URL>` | | Node RPC endpoint, HTTP(S) or WS(S). Required. |
+| `--rpc <URL>` | | Node RPC endpoint. Required. See [supported URLs](support.md#nodes). |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send each trace over OTLP/HTTP. |
 | `--workers <N>` | 8 | Blocks replayed at once, 1 to 16. |
 | `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
@@ -168,7 +168,7 @@ These standard OpenTelemetry variables change how `--otlp` sends traces.
 | `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | 10000 | The same. Wins over `OTEL_EXPORTER_OTLP_TIMEOUT`. |
 
 `--otlp` always sets the URL, so `OTEL_EXPORTER_OTLP_ENDPOINT` has no effect.
-See [Send traces through Grafana Alloy to Tempo](../guides/send-traces-through-alloy.md#headers-and-authentication).
+See [Headers and authentication](../guides/send-traces.md#headers-and-authentication).
 
 ## Exit codes
 
