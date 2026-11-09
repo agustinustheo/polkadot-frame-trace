@@ -35,7 +35,7 @@ E1 showed the node's block-trace RPC is not enough on its own: it needs unsafe R
 | Runtime spans | `sp-tracing` `with-tracing` | Optional; parents reconstructed from the entered-span stack |
 | Extrinsic boundaries | `System::ExecutionPhase`, `:extrinsic_index`, `System::ExtrinsicData` writes | Rules in `crates/model/src/phase.rs` |
 | Key → `Pallet::Item` + map keys | `frame-decode` / `frame-metadata` (V14–V16) | |
-| OTLP export | `opentelemetry` / `opentelemetry_sdk` / `opentelemetry-otlp` 0.33 | Used directly, not through `tracing-opentelemetry` |
+| OTLP export | `opentelemetry` / `opentelemetry_sdk` 0.33 | Used directly, not through `tracing-opentelemetry` |
 | Span attribute names | OTel database semantic conventions | `db.system.name = "substrate"`, `db.operation.name`, `db.collection.name` = pallet, plus `frame.storage.*` |
 | Viewer | Jaeger v2 all-in-one (4317/4318/16686) | |
 

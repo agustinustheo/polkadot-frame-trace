@@ -91,11 +91,6 @@ The [reference](../reference/commands.md#follow) lists the limits.
 
 If a check for new blocks fails, `follow` logs it and tries again. It waits longer after each failure.
 
-```text
-follow poll failed: RPC error: chain_getFinalizedHead: connect ws://127.0.0.1:9: IO error: Connection refused (os error 61); retrying in 2s
-follow poll still failing after 6 attempts over 1m06s: RPC error: chain_getFinalizedHead: connect ws://127.0.0.1:9: IO error: Connection refused (os error 61); retrying in 1m00s
-```
-
 When the node answers again, it logs `follow poll recovered after <N> failed attempt(s) over <time>`.
 
 If the OTLP receiver stops, `follow` keeps replaying blocks and holds their traces, up to the [queue size](../reference/commands.md#follow).

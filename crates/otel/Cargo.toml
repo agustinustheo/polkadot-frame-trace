@@ -18,14 +18,10 @@ polkadot-frame-trace-decode.workspace = true
 polkadot-frame-trace-model.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
-opentelemetry-otlp.workspace = true
-opentelemetry-http = { version = "0.33.1", default-features = false, features = ["reqwest-blocking"] }
 opentelemetry-proto.workspace = true
-async-trait = "0.1"
-futures-executor = "0.3"
 prost.workspace = true
-reqwest = { version = "0.13", default-features = false }
-tokio = { version = "1", features = ["rt", "time", "sync"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+percent-encoding = "2.3"
 serde_json.workspace = true
 thiserror.workspace = true
 

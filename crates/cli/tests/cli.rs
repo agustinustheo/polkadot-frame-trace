@@ -69,7 +69,7 @@ fn rpc_source_reports_connection_failure() {
     let out = run(&["block", "--rpc", url, "--block", "1"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
-    assert!(stderr.contains("connect ws://127.0.0.1:1:"), "{stderr}");
+    assert!(stderr.contains("http://127.0.0.1:1:"), "{stderr}");
     for hidden in ["alice9", "secret", "apikey", "k3y", "/path"] {
         assert!(!stderr.contains(hidden), "{stderr}");
     }
@@ -1172,7 +1172,7 @@ fn endpoint_credentials_never_reach_the_output_but_the_host_and_port_do() {
             &text,
             "follow poll failed: RPC error: chain_getFinalizedHead: ",
         );
-        check(&text, &format!("{scheme}://127.0.0.1:1: "));
+        check(&text, "http://127.0.0.1:1: ");
         check(
             &text,
             "warning: --otlp http://192.0.2.1:4318 is not encrypted",

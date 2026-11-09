@@ -50,7 +50,7 @@ const MAX_NAME_CHARS: usize = 160;
 pub enum Error {
     /// The OTLP exporter could not be built.
     #[error("cannot build OTLP exporter: {0}")]
-    Build(#[from] opentelemetry_otlp::ExporterBuildError),
+    Build(String),
     /// The receiver accepted the HTTP request but rejected some of its spans.
     #[error("{rejected} of {total} spans rejected by the receiver: {message}")]
     Rejected {
@@ -214,15 +214,13 @@ impl OtlpSender {
     }
 
     fn build(endpoint: &str, timeout: Option<Duration>) -> Result<Self, Error> {
-        let mut exporter = HttpExporter::new(traces_url(endpoint), timeout)?;
-        exporter.set_resource(&resource());
+        let exporter = HttpExporter::new(traces_url(endpoint), timeout)?;
         Ok(Self { exporter })
     }
 
     /// Sends the batches of `trace` that the receiver has not accepted yet, and stops at the
     /// first failure. An accepted batch is never sent again, so calling this again after
-    /// [`Error::Incomplete`] retries only the rest. No request is still running when it
-    /// returns.
+    /// [`Error::Incomplete`] retries only the rest.
     ///
     /// Returns the number of spans once every batch was accepted, or [`Error::Rejected`] if
     /// the receiver refused some spans of an accepted batch. Those are not sent again.

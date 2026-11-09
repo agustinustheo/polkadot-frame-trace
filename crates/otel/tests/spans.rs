@@ -282,7 +282,6 @@ fn scripted_receiver(script: Vec<u16>) -> (String, Seen) {
 #[test]
 fn a_retry_sends_only_the_batches_not_yet_accepted_with_the_same_span_ids() {
     // 1002 spans: batch 1 is accepted, batch 2 fails, then the retry sends only batch 2.
-    // 400 is not a status the exporter retries by itself, so the failure reaches the caller.
     let (url, seen) = scripted_receiver(vec![200, 400, 200]);
     let sender = polkadot_frame_trace_otel::OtlpSender::new(&url).unwrap();
     let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(1000), Timing::default());
@@ -354,7 +353,7 @@ fn raw_receiver(
 }
 
 #[test]
-fn a_slow_response_or_the_exporters_own_retries_cannot_outlast_the_timeout() {
+fn a_slow_response_cannot_outlast_the_timeout() {
     use std::io::Write;
     // Headers at once, then one body byte every 150 ms: each read is quick, the whole is not.
     let slow_body = raw_receiver(|_, _, stream| {
@@ -366,29 +365,14 @@ fn a_slow_response_or_the_exporters_own_retries_cannot_outlast_the_timeout() {
             std::thread::sleep(Duration::from_millis(150));
         }
     });
-    // A slow 503 makes the exporter retry by itself; the retry then gets no answer at all.
-    let slow_retry = raw_receiver(|index, _, stream| {
-        if index == 0 {
-            std::thread::sleep(Duration::from_millis(500));
-            let _ = stream.write_all(
-                b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-            );
-        } else {
-            std::thread::sleep(Duration::from_secs(10));
-        }
-    });
-    for (url, timeout, limit) in [(slow_body, 400, 700), (slow_retry, 800, 1000)] {
-        let sender = polkadot_frame_trace_otel::OtlpSender::with_timeout(
-            &url,
-            Duration::from_millis(timeout),
-        )
-        .unwrap();
-        let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(10), Timing::default());
-        let start = std::time::Instant::now();
-        assert!(sender.send(&mut trace).is_err());
-        let took = start.elapsed();
-        assert!(took < Duration::from_millis(limit), "{url}: {took:?}");
-    }
+    let sender =
+        polkadot_frame_trace_otel::OtlpSender::with_timeout(&slow_body, Duration::from_millis(400))
+            .unwrap();
+    let mut trace = polkadot_frame_trace_otel::prepare(&synthetic_block(10), Timing::default());
+    let start = std::time::Instant::now();
+    assert!(sender.send(&mut trace).is_err());
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(700), "{slow_body}: {took:?}");
 }
 
 #[test]

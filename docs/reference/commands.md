@@ -139,7 +139,7 @@ polkadot-frame-trace follow --rpc URL --otlp
 | State kept in memory | 128 MiB | Downloaded state shared by all workers. Counts an upper estimate of what each piece and its index take in memory, so the real use is lower. When full, the least recently read piece goes first. |
 | Traces waiting for export | 32 | Held while the receiver is down. Each holds all spans of one block in memory. When full, the oldest is dropped. |
 | Spans per export request | 512 | An acknowledged request is never sent again. A retry sends only the others. A lost acknowledgement can deliver the same spans twice. |
-| Wait between export tries | 1 s, doubling to 30 s | Each request of a try, with the exporter's own retries, takes at most the OTLP timeout. The block is not replayed again. |
+| Wait between export tries | 1 s, doubling to 30 s | Each request takes at most the OTLP timeout. The block is not replayed again. |
 | Wait at stop | 10 s for replays, then 10 s for exports | See below. |
 | Replay deadline | 10 minutes | A replay that runs the runtime this long without waiting on the node stops `follow` with exit code 1, so a supervisor such as systemd starts a fresh process. Time waiting on the node does not count. |
 
@@ -164,7 +164,7 @@ These standard OpenTelemetry variables change how `--otlp` sends traces.
 | --- | --- | --- |
 | `OTEL_EXPORTER_OTLP_HEADERS` | none | Headers sent with every export, as `key=value` pairs separated by commas. Values are URL-decoded, so write a space as `%20`. |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | none | The same. Replaces `OTEL_EXPORTER_OTLP_HEADERS` when both are set. |
-| `OTEL_EXPORTER_OTLP_TIMEOUT` | 10000 | Longest time for one export request, in milliseconds. Covers connecting, the whole response and the exporter's own retries. A trace of several requests can take several times this. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | 10000 | Longest time for one export request, in milliseconds. Covers connecting and the whole response. A trace of several requests can take several times this. |
 | `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | 10000 | The same. Wins over `OTEL_EXPORTER_OTLP_TIMEOUT`. |
 
 `--otlp` always sets the URL, so `OTEL_EXPORTER_OTLP_ENDPOINT` has no effect.
