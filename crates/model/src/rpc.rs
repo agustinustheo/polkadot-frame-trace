@@ -9,27 +9,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
-
-/// Response of the `state_traceBlock` RPC (an externally tagged enum on the wire:
-/// `{"blockTrace": {...}}` or `{"traceError": {"error": "..."}}`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum TraceBlockResponse {
-    /// The node could not trace the block.
-    TraceError(TraceError),
-    /// The trace of the block.
-    BlockTrace(BlockTrace),
-}
-
-/// Error variant of [`TraceBlockResponse`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TraceError {
-    /// Error message from the node.
-    pub error: String,
-}
-
 /// All spans and events recorded while re-executing one block.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,60 +76,5 @@ impl Event {
     /// The value of a string field, if recorded.
     pub fn field(&self, name: &str) -> Option<&str> {
         self.data.string_values.get(name).map(String::as_str)
-    }
-}
-
-/// Parses a `state_traceBlock` response.
-///
-/// Accepts the full JSON-RPC envelope (`{"jsonrpc": "2.0", "result": ...}`), the bare
-/// [`TraceBlockResponse`], or a bare [`BlockTrace`].
-pub fn parse_trace_block(json: &str) -> Result<BlockTrace, Error> {
-    let mut value: serde_json::Value = serde_json::from_str(json)?;
-
-    if let Some(obj) = value.as_object_mut() {
-        if let Some(err) = obj.get("error").filter(|e| !e.is_null()) {
-            return Err(Error::Rpc(err.to_string()));
-        }
-        if let Some(result) = obj.remove("result") {
-            value = result;
-        }
-    }
-
-    let is_response = value
-        .as_object()
-        .is_some_and(|o| o.contains_key("blockTrace") || o.contains_key("traceError"));
-    if !is_response {
-        return Ok(serde_json::from_value(value)?);
-    }
-    match serde_json::from_value(value)? {
-        TraceBlockResponse::BlockTrace(trace) => Ok(trace),
-        TraceBlockResponse::TraceError(err) => Err(Error::Trace(err.error)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_envelope_response_and_bare_trace_and_surfaces_errors() {
-        let bare = r#"{"blockHash":"0x01","parentHash":"0x00","tracingTargets":"state",
-            "storageKeys":"","methods":"","spans":[],
-            "events":[{"target":"state","data":{"stringValues":{"method":"Get"}},"parentId":null}]}"#;
-        let wrapped = format!(r#"{{"blockTrace":{bare}}}"#);
-        let envelope = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{wrapped}}}"#);
-        // Some clients write `"error": null` next to a successful result.
-        let null_error = format!(r#"{{"jsonrpc":"2.0","id":1,"error":null,"result":{wrapped}}}"#);
-
-        for input in [bare.to_string(), wrapped, envelope, null_error] {
-            let trace = parse_trace_block(&input).unwrap();
-            assert_eq!(trace.block_hash, "0x01");
-            assert_eq!(trace.events[0].field("method"), Some("Get"));
-        }
-
-        let trace_err = r#"{"result":{"traceError":{"error":"boom"}}}"#;
-        assert!(matches!(parse_trace_block(trace_err), Err(Error::Trace(e)) if e == "boom"));
-        let rpc_err = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"unsafe"}}"#;
-        assert!(matches!(parse_trace_block(rpc_err), Err(Error::Rpc(_))));
     }
 }

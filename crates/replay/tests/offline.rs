@@ -1,8 +1,6 @@
 //! Real signed blocks and the public parachain execute without a node or any network access.
 #![allow(clippy::unwrap_used)]
-use polkadot_frame_trace_model::{
-    OpKind, PhaseKind, ReplayEvent, TracedBlock, rpc::parse_trace_block,
-};
+use polkadot_frame_trace_model::{OpKind, PhaseKind, ReplayEvent, TracedBlock, rpc::BlockTrace};
 use polkadot_frame_trace_replay::{Artifact, Error, replay};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -103,9 +101,11 @@ fn check(name: &str, wasm: bool) {
         }
     }
     if fixture(name).join("oracle.json.zst").exists() {
-        let oracle =
-            parse_trace_block(std::str::from_utf8(&read(name, "oracle.json.zst")).unwrap())
-                .unwrap();
+        let oracle = serde_json::from_value::<BlockTrace>(
+            serde_json::from_slice::<Value>(&read(name, "oracle.json.zst")).unwrap()["blockTrace"]
+                .take(),
+        )
+        .unwrap();
         assert_eq!(
             oracle.block_hash.trim_start_matches("0x"),
             result.capture.block_hash.trim_start_matches("0x")

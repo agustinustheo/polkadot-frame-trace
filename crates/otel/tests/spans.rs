@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use polkadot_frame_trace_decode::{
     AnnotatedBlock, AnnotatedOp, AnnotatedPhase, Metadata, annotate,
 };
-use polkadot_frame_trace_model::{Stats, TracedBlock, rpc::parse_trace_block};
+use polkadot_frame_trace_model::{Stats, TracedBlock, rpc::BlockTrace};
 
 use opentelemetry::{
     Value,
@@ -53,7 +53,14 @@ fn by_name<'a>(spans: &'a [SpanData], name: &str) -> &'a SpanData {
 #[test]
 fn builds_block_phase_op_tree() {
     let json = String::from_utf8(fixture("model/two-extrinsics.json")).unwrap();
-    let block = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
+    let block = TracedBlock::from_trace(
+        &serde_json::from_value::<BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["result"]["blockTrace"]
+                .take(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let md = Metadata::from_bytes(&fixture("metadata/westend-v16.scale")).unwrap();
     let annotated = annotate(&block, Some(&md));
     let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
@@ -473,7 +480,7 @@ fn traced_batch_keeps_named_extrinsic_runtime_and_ops_in_one_tree() {
         )
         .unwrap(),
         None,
-        &polkadot_frame_trace_replay::ReplaySession::new().unwrap(),
+        &polkadot_frame_trace_replay::ReplaySession::new(),
     )
     .unwrap();
     let metadata = Metadata::from_hex(&replay.artifact.metadata).unwrap();
@@ -605,7 +612,14 @@ fn traced_batch_keeps_named_extrinsic_runtime_and_ops_in_one_tree() {
 fn hook_names_resolve_pallet_metadata_and_fall_back_to_crates() {
     use polkadot_frame_trace_model::{MeasuredTiming, RuntimeSpan};
     let json = String::from_utf8(fixture("model/two-extrinsics.json")).unwrap();
-    let mut traced = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
+    let mut traced = TracedBlock::from_trace(
+        &serde_json::from_value::<BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["result"]["blockTrace"]
+                .take(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     traced.timing = Some(MeasuredTiming {
         start_ns: 0,
         duration_ns: 100,

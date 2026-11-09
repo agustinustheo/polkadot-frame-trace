@@ -43,7 +43,8 @@ pub struct ReplaySession {
 }
 impl ReplaySession {
     /// Proof nodes stay in memory; compiled runtimes persist in the user's private cache.
-    pub fn new() -> Result<Self> {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
         // Wasmtime loads native code, so another user must not be able to replace this cache.
         let (base, wasm_cache) = match private_cache() {
             Ok(base) => match private_dir(&base.join("wasm")) {
@@ -58,7 +59,7 @@ impl ReplaySession {
                 (PathBuf::new(), false)
             }
         };
-        let session = Self {
+        Self {
             nodes: Default::default(),
             hints: Default::default(),
             cold_start: Default::default(),
@@ -71,8 +72,7 @@ impl ReplaySession {
             announced_override: Default::default(),
             #[cfg(test)]
             metadata_runs: Default::default(),
-        };
-        Ok(session)
+        }
     }
     /// Admit one cold replay at a time until successful replay paths are available.
     /// `follow` holds the returned guard through replay; other callers need not use this gate.
@@ -212,12 +212,9 @@ impl ReplaySession {
     pub fn memory_cache(&self) -> crate::MemoryCacheStats {
         self.nodes.lock().stats()
     }
-    pub(crate) fn shared() -> Result<&'static Self> {
-        static SESSION: OnceLock<std::result::Result<ReplaySession, String>> = OnceLock::new();
-        SESSION
-            .get_or_init(|| Self::new().map_err(|e| e.to_string()))
-            .as_ref()
-            .map_err(|e| Error::Invalid(e.clone()))
+    pub(crate) fn shared() -> &'static Self {
+        static SESSION: OnceLock<ReplaySession> = OnceLock::new();
+        SESSION.get_or_init(Self::new)
     }
 }
 
@@ -364,7 +361,7 @@ mod tests {
     use super::*;
     #[test]
     fn idle_runtimes_above_four_go_when_the_next_one_loads() {
-        let session = ReplaySession::new().expect("session");
+        let session = ReplaySession::new();
         // Six runtimes in use at once: all stay.
         let busy: Vec<_> = (0..6u8).map(|i| session.executor_for(&[i])).collect();
         assert_eq!(session.executors.lock().len(), 6);
@@ -376,7 +373,7 @@ mod tests {
     #[test]
     fn cold_followers_wait_for_the_first_replay_unless_cancelled_and_errors_or_panics_release_it() {
         use std::{sync::mpsc, time::Duration};
-        let session = ReplaySession::new().expect("session");
+        let session = ReplaySession::new();
         let cancel = crate::rpc::CancellationToken::new();
         let guard = session
             .cold_start(&cancel)
@@ -413,7 +410,7 @@ mod tests {
         assert!(session.cold_start(&cancel).expect("warm").is_none());
 
         // A failed replay releases the gate, and so does a panic.
-        let session = ReplaySession::new().expect("session");
+        let session = ReplaySession::new();
         let rpc = crate::rpc::Rpc::new("http://127.0.0.1:1").expect("rpc");
         let replay = || -> Result<()> {
             let _guard = session.cold_start(&cancel)?;
@@ -469,7 +466,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("polkadot-frame-trace-wasm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut session = ReplaySession::new().expect("session");
+        let mut session = ReplaySession::new();
         session.cache_base = dir.clone();
         std::fs::create_dir_all(dir.join("wasm")).expect("mkdir");
         let active = session.executor_for(b"runtime");

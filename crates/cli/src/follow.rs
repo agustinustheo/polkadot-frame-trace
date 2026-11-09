@@ -520,7 +520,7 @@ fn follow(args: FollowArgs) -> Result<()> {
         .map(polkadot_frame_trace_otel::OtlpSender::new)
         .transpose()
         .context("--otlp")?;
-    let session = ReplaySession::new()?;
+    let session = ReplaySession::new();
     let capacity = queue_capacity(args.workers);
     let (send, receive) = mpsc::sync_channel::<Job>(capacity);
     let (events, completed) = mpsc::channel();

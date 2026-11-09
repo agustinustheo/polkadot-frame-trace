@@ -9,8 +9,7 @@ use crate::{KeyName, Metadata, key::well_known};
 /// A [`TracedBlock`] with every key and extrinsic named. Serialises to the `--json` output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnotatedBlock {
-    /// Public JSON format version; absent versions are legacy v1.
-    #[serde(default = "legacy_schema_version")]
+    /// Public JSON format version.
     pub schema_version: u32,
     #[serde(default)]
     pub execution: Option<ExecutionInfo>,
@@ -20,7 +19,7 @@ pub struct AnnotatedBlock {
     /// A substitute runtime executed instead of the state's `:code`; absent normally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_override: Option<RuntimeOverrideInfo>,
-    /// Observed span tree, empty for legacy JSON.
+    /// Observed span tree.
     pub runtime_spans: Vec<polkadot_frame_trace_model::RuntimeSpan>,
     /// Replay duration, absent for synthetic input.
     pub timing: Option<polkadot_frame_trace_model::MeasuredTiming>,
@@ -150,10 +149,6 @@ pub struct AnnotatedOp {
     pub value_truncated: bool,
     /// The key was already read earlier in this phase.
     pub duplicate_read: bool,
-}
-
-fn legacy_schema_version() -> u32 {
-    1
 }
 
 /// Name keys and extrinsics; without metadata, only well-known keys are named.
@@ -417,9 +412,13 @@ mod phase_timing_tests {
     use super::*;
     #[test]
     fn phase_json_has_explicit_bounds_and_marks_storage_only_envelopes() {
-        let raw = polkadot_frame_trace_model::rpc::parse_trace_block(include_str!(
-            "../../../fixtures/model/two-extrinsics.json"
-        ))
+        let raw = serde_json::from_value::<polkadot_frame_trace_model::rpc::BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../fixtures/model/two-extrinsics.json"
+            ))
+            .expect("JSON")["result"]["blockTrace"]
+                .take(),
+        )
         .unwrap();
         let mut block = TracedBlock::from_trace(&raw).unwrap();
         for op in &mut block.ops {

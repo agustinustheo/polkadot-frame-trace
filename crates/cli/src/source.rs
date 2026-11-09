@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args};
 use polkadot_frame_trace_decode::Metadata;
 
-pub const PROOF_CONCURRENCY: u8 = 8;
-pub const FOLLOW_PROOF_CONCURRENCY: u8 = 16;
+pub const PROOF_CONCURRENCY: usize = 8;
+pub const FOLLOW_PROOF_CONCURRENCY: usize = 16;
 
 /// Arguments that select the block to trace.
 #[derive(Args)]
@@ -113,14 +113,14 @@ pub fn warn_unencrypted(flag: &str, url: &str) {
 /// A node client. `timeout` bounds each try; a request gets four tries within four times it.
 pub fn rpc(
     url: &str,
-    concurrency: u8,
+    concurrency: usize,
     timeout: Duration,
     cancel: polkadot_frame_trace_replay::rpc::CancellationToken,
 ) -> Result<polkadot_frame_trace_replay::rpc::Rpc> {
     warn_unencrypted("--rpc", url);
     Ok(polkadot_frame_trace_replay::rpc::Rpc::with_options(
         url,
-        usize::from(concurrency),
+        concurrency,
         timeout * 4,
         cancel,
     )?)
@@ -181,7 +181,7 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
                 polkadot_frame_trace_replay::replay_with_session(
                     artifact,
                     None,
-                    &polkadot_frame_trace_replay::ReplaySession::new()?
+                    &polkadot_frame_trace_replay::ReplaySession::new()
                         .with_runtime_override(runtime_override),
                 )
             })
@@ -200,7 +200,7 @@ pub fn load(args: &SourceArgs) -> Result<Loaded> {
             let replay = polkadot_frame_trace_replay::online_with_session(
                 &rpc,
                 args.block.as_deref().unwrap_or_default(),
-                &polkadot_frame_trace_replay::ReplaySession::new()?
+                &polkadot_frame_trace_replay::ReplaySession::new()
                     .with_runtime_override(runtime_override),
             )
             .inspect_err(|_| {

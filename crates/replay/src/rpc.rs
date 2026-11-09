@@ -20,7 +20,6 @@ const ALLOWED: &[&str] = &[
     "state_getRuntimeVersion",
     "state_getReadProof",
     "state_getChildReadProof",
-    "state_getMetadata",
     "state_call",
 ];
 
@@ -86,11 +85,6 @@ impl Rpc {
         {
             return Err(Error::Rpc(
                 "expected ws://, wss://, http:// or https:// URL".into(),
-            ));
-        }
-        if !(1..=64).contains(&parallelism) {
-            return Err(Error::Invalid(
-                "proof parallelism must be between 1 and 64".into(),
             ));
         }
         let url = if let Some(rest) = url.strip_prefix("wss://") {
@@ -178,16 +172,6 @@ impl Rpc {
         if !ALLOWED.contains(&method) {
             return Err(Error::MethodNotAllowed(method.into()));
         }
-        if method == "state_getMetadata"
-            && (params.as_array().is_none_or(|a| a.len() != 1)
-                || params[0]
-                    .as_str()
-                    .is_none_or(|s| s.parse::<sp_core::H256>().is_err()))
-        {
-            return Err(Error::Rpc(
-                "metadata must be fetched at an explicit parent/block hash".into(),
-            ));
-        }
         if method == "state_call"
             && (params.as_array().is_none_or(|a| a.len() != 3)
                 || params[0].as_str().is_none_or(str::is_empty)
@@ -258,9 +242,6 @@ impl Rpc {
                             return Err(Error::Unavailable(format!(
                                 "{message}; parent state may be pruned (use an archive endpoint)"
                             )));
-                        }
-                        if method == "state_getMetadata" && error["code"] == -32601 {
-                            return Err(Error::Unavailable(message));
                         }
                         if error["code"] == 429 || lower.contains("too many requests") {
                             return Err(Error::TransientRpc(message));

@@ -364,7 +364,7 @@ pub struct Replay {
 
 /// Fetch a number, hash, `best`, or `finalized` block. Context and proofs are pinned to its parent.
 pub fn online(rpc: &Rpc, selector: &str) -> Result<Replay> {
-    online_with_session(rpc, selector, ReplaySession::shared()?)
+    online_with_session(rpc, selector, ReplaySession::shared())
 }
 
 pub fn online_with_session(rpc: &Rpc, selector: &str, session: &ReplaySession) -> Result<Replay> {
@@ -458,7 +458,7 @@ pub fn offline(dir: &Path) -> Result<Replay> {
 
 /// Also accepts in-memory artifacts for callers that store them themselves.
 pub fn replay(artifact: Artifact, rpc: Option<Rpc>) -> Result<Replay> {
-    replay_with_session(artifact, rpc, ReplaySession::shared()?)
+    replay_with_session(artifact, rpc, ReplaySession::shared())
 }
 pub fn replay_with_session(
     artifact: Artifact,

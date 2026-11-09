@@ -5,7 +5,7 @@
 use frame_metadata::{RuntimeMetadata, RuntimeMetadataPrefixed};
 use parity_scale_codec::{Decode, Encode};
 use polkadot_frame_trace_decode::{KeyName, Metadata, annotate};
-use polkadot_frame_trace_model::{TracedBlock, rpc::parse_trace_block};
+use polkadot_frame_trace_model::{TracedBlock, rpc::BlockTrace};
 use sp_crypto_hashing::{blake2_128, blake2_256, twox_64, twox_128};
 
 const ALICE: &str = "d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
@@ -133,7 +133,13 @@ fn names_extrinsics_from_a_westend_block() {
     // names.)
     let json =
         String::from_utf8(fixture("model/real/people-paseo-block-1-trace-state.json")).unwrap();
-    let block = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
+    let block = TracedBlock::from_trace(
+        &serde_json::from_value::<BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["blockTrace"].take(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let other = annotate(&block, Some(&westend(16)));
     assert_eq!(other.phases[1].label, "extrinsic 0");
     assert!(other.phases[1].call.is_none() && other.phases[1].call_error.is_some());
@@ -142,7 +148,14 @@ fn names_extrinsics_from_a_westend_block() {
 #[test]
 fn annotates_a_traced_block() {
     let json = String::from_utf8(fixture("model/two-extrinsics.json")).unwrap();
-    let block = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
+    let block = TracedBlock::from_trace(
+        &serde_json::from_value::<BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["result"]["blockTrace"]
+                .take(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let md = westend(16);
     let annotated = annotate(&block, Some(&md));
 
@@ -203,7 +216,14 @@ fn annotates_a_traced_block() {
 #[test]
 fn extrinsic_phases_carry_the_transaction_hash() {
     let json = String::from_utf8(fixture("model/two-extrinsics.json")).unwrap();
-    let block = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
+    let block = TracedBlock::from_trace(
+        &serde_json::from_value::<BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["result"]["blockTrace"]
+                .take(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let annotated = annotate(&block, Some(&westend(16)));
     for (phase, annotated) in block.phases.iter().zip(&annotated.phases) {
         let Some(bytes) = &phase.extrinsic else {
@@ -289,7 +309,8 @@ fn names_truncated_keys_from_their_prefix_only() {
         event(&key),
         event(&key)
     );
-    let block = TracedBlock::from_trace(&parse_trace_block(&json).unwrap()).unwrap();
+    let block =
+        TracedBlock::from_trace(&serde_json::from_str::<BlockTrace>(&json).unwrap()).unwrap();
     let annotated = annotate(&block, Some(&md));
     let ops = &annotated.phases[0].ops;
     assert_eq!(ops[0].label, "get System::Account(…)");

@@ -4,12 +4,16 @@
 
 use std::ops::Range;
 
-use polkadot_frame_trace_model::{OpKind, PhaseKind, Stats, TracedBlock, rpc::parse_trace_block};
+use polkadot_frame_trace_model::{OpKind, PhaseKind, Stats, TracedBlock, rpc::BlockTrace};
 
 fn load(name: &str) -> TracedBlock {
     let path = format!("{}/../../fixtures/model/{name}", env!("CARGO_MANIFEST_DIR"));
     let json = std::fs::read_to_string(&path).expect("fixture exists");
-    TracedBlock::from_trace(&parse_trace_block(&json).expect("valid trace")).expect("valid events")
+    let json: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let trace: BlockTrace =
+        serde_json::from_value(json.get("result").unwrap_or(&json)["blockTrace"].clone())
+            .expect("valid trace");
+    TracedBlock::from_trace(&trace).expect("valid events")
 }
 
 /// Top-level phases, with the range of a nested `PostInherents` phase.

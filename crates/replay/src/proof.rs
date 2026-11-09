@@ -76,7 +76,7 @@ pub struct ProofDb {
 impl ProofDb {
     #[cfg(test)]
     pub fn new(rpc: Option<Rpc>, parent: H256) -> Self {
-        Self::with_session(rpc, parent, ReplaySession::new().expect("cache directory"))
+        Self::with_session(rpc, parent, ReplaySession::new())
     }
     pub fn with_session(rpc: Option<Rpc>, parent: H256, session: ReplaySession) -> Self {
         let online = rpc.is_some();
@@ -520,7 +520,7 @@ mod prediction_tests {
     use super::*;
     #[test]
     fn predictions_keep_three_replays_at_most_4096_paths_and_31_related_keys() {
-        let session = ReplaySession::new().expect("session");
+        let session = ReplaySession::new();
         session.remember_paths([b"old".to_vec()].into());
         for i in 0..3 {
             session.remember_paths([vec![i]].into());
@@ -539,7 +539,7 @@ mod prediction_tests {
     }
     #[test]
     fn active_blocks_share_immutable_nodes_without_sharing_offline_coverage() {
-        let session = ReplaySession::new().expect("session");
+        let session = ReplaySession::new();
         let rpc = Rpc::new("ws://127.0.0.1:1").expect("lazy RPC");
         let first = ProofDb::with_session(Some(rpc.clone()), H256::repeat_byte(1), session.clone());
         let second = ProofDb::with_session(Some(rpc), H256::repeat_byte(2), session.clone());

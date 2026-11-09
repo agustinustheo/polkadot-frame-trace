@@ -102,7 +102,6 @@ fn allowlist_rejects_unsafe_unproved_and_unpinned_calls_before_network() {
             Err(Error::MethodNotAllowed(_))
         ));
     }
-    assert!(rpc.call("state_getMetadata", json!([])).is_err());
     // state_call needs an explicit block hash and valid hex data.
     for params in [
         json!([]),
@@ -254,10 +253,6 @@ fn online_acquisition_pins_context_measures_with_zero_rpc_and_a_failed_root_chec
                 assert_eq!(request["params"], json!([parent]));
                 artifact.runtime_version.clone()
             }
-            "state_getMetadata" => {
-                assert_eq!(request["params"], json!([parent]));
-                json!("") // No speculative hints: exercise real execution-driven demand paging.
-            }
             "state_getReadProof" => {
                 assert_eq!(request["params"][1], parent);
                 let keys: Vec<_> = request["params"][0]
@@ -278,9 +273,7 @@ fn online_acquisition_pins_context_measures_with_zero_rpc_and_a_failed_root_chec
             method => panic!("unexpected RPC {method}"),
         }
     });
-    let session = ReplaySession::new()
-        .unwrap()
-        .with_speculative_discovery(false);
+    let session = ReplaySession::new().with_speculative_discovery(false);
     let result = online_with_session(&rpc, "2", &session).unwrap();
     assert!(result.root_check);
     assert_eq!(result.measured_rpc_count, 0);
@@ -293,9 +286,7 @@ fn online_acquisition_pins_context_measures_with_zero_rpc_and_a_failed_root_chec
     let offline = replay(result.artifact, None).unwrap();
     assert_eq!(offline.expected_state_root, offline.computed_state_root);
 
-    let session = ReplaySession::new()
-        .unwrap()
-        .with_speculative_discovery(false);
+    let session = ReplaySession::new().with_speculative_discovery(false);
     let error = online_with_session(&rpc, &tampered_hash, &session).unwrap_err();
     assert!(matches!(error, Error::Execution(_)), "{error}");
     assert!(session.predicted_keys().is_empty(), "hints recorded");
@@ -343,7 +334,7 @@ fn proof_prefetch_batches_keys_and_bounds_parallel_requests() {
 
 #[test]
 fn shared_nodes_are_reauthenticated_at_each_blocks_root() {
-    let session = ReplaySession::new().unwrap();
+    let session = ReplaySession::new();
     let mut seed = sp_state_machine::TestExternalities::<Blake2Hasher>::default();
     seed.execute_with(|| sp_io::storage::set(b"key", b"value"));
     seed.commit_all().unwrap();
@@ -440,7 +431,7 @@ fn prefetch_skips_covered_paths_and_wrong_predictions_keep_results_and_artifacts
     );
 
     // Cached paths are skipped only when the cached nodes cover them from the new root.
-    let session = ReplaySession::new().unwrap();
+    let session = ReplaySession::new();
     let first = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
     first.insert_nodes(nodes);
     let warm = ProofDb::with_session(Some(rpc.clone()), parent, session.clone());
@@ -466,7 +457,7 @@ fn prefetch_skips_covered_paths_and_wrong_predictions_keep_results_and_artifacts
 
     // Wrong predictions fetch nodes the block never uses: results stay right and the
     // artifact keeps only the nodes execution used.
-    let session = ReplaySession::new().unwrap();
+    let session = ReplaySession::new();
     session.remember_paths((0..255u8).map(|i| vec![i, 255]).collect());
     let db = ProofDb::with_session(Some(rpc), parent, session.clone());
     db.set_root(root);
@@ -557,9 +548,8 @@ mod runtime_override {
 
     #[test]
     fn changed_spec_version_is_reported_before_execution() {
-        let session = ReplaySession::new()
-            .unwrap()
-            .with_runtime_override(Some(bump_spec_version(&traced_wasm())));
+        let session =
+            ReplaySession::new().with_runtime_override(Some(bump_spec_version(&traced_wasm())));
         let result = replay_with_session(
             Artifact::load(&fixture("people-transfer")).unwrap(),
             None,
@@ -583,9 +573,7 @@ mod runtime_override {
             .map(|n| unhex(n).unwrap())
             .max_by_key(Vec::len)
             .unwrap();
-        let session = ReplaySession::new()
-            .unwrap()
-            .with_runtime_override(Some(westend));
+        let session = ReplaySession::new().with_runtime_override(Some(westend));
         let error = replay_with_session(
             Artifact::load(&fixture("people-transfer")).unwrap(),
             None,
@@ -721,7 +709,7 @@ fn real_contract_call_fetches_pinned_child_proofs_and_rejects_bad_ones() {
         });
         // Speculative discovery on, as in production: its pending misses must keep their
         // child namespace.
-        let session = ReplaySession::new().unwrap();
+        let session = ReplaySession::new();
         let result = online_with_session(&rpc, &format!("{:?}", artifact.block_hash), &session);
         let requests = requests.lock().unwrap().clone();
         stop(halt, worker);

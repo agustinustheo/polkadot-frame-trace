@@ -103,7 +103,7 @@ fn duplicate_reads_are_grouped_by_key_not_by_name() {
         "polkadot-frame-trace-dups-{}.json",
         std::process::id()
     ));
-    let raw = polkadot_frame_trace_model::rpc::parse_trace_block(&json).unwrap();
+    let raw = serde_json::from_str::<polkadot_frame_trace_model::rpc::BlockTrace>(&json).unwrap();
     let traced = polkadot_frame_trace_model::TracedBlock::from_trace(&raw).unwrap();
     let block = polkadot_frame_trace_decode::annotate(&traced, None);
     std::fs::write(&path, serde_json::to_vec(&block).unwrap()).unwrap();
@@ -192,9 +192,13 @@ fn otlp_response(
 #[test]
 fn block_fails_when_the_collector_rejects_spans() {
     let path = std::env::temp_dir().join(format!("frame-collector-{}.json", std::process::id()));
-    let raw = polkadot_frame_trace_model::rpc::parse_trace_block(include_str!(
-        "../../../fixtures/model/real/people-paseo-block-1-trace-state.json"
-    ))
+    let raw = serde_json::from_value::<polkadot_frame_trace_model::rpc::BlockTrace>(
+        serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../../fixtures/model/real/people-paseo-block-1-trace-state.json"
+        ))
+        .unwrap()["blockTrace"]
+            .take(),
+    )
     .unwrap();
     let traced = polkadot_frame_trace_model::TracedBlock::from_trace(&raw).unwrap();
     let block = polkadot_frame_trace_decode::annotate(&traced, None);

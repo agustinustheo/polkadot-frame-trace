@@ -139,8 +139,8 @@ Raise the limit in the receiver's configuration, or send to a receiver without i
 ## `follow poll failed`
 
 ```text
-follow poll failed: RPC error: chain_getFinalizedHead: connect ws://127.0.0.1:9: IO error: Connection refused (os error 61); retrying in 2s
-follow poll still failing after 6 attempts over 1m06s: RPC error: chain_getFinalizedHead: connect ws://127.0.0.1:9: IO error: Connection refused (os error 61); retrying in 1m00s
+follow poll failed: RPC error: chain_getFinalizedHead: http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 61); retrying in 2s
+follow poll still failing after 6 attempts over 1m06s: RPC error: chain_getFinalizedHead: http://127.0.0.1:9: error sending request: client error (Connect): tcp connect error: Connection refused (os error 61); retrying in 1m00s
 ```
 
 `follow` could not ask the node for its newest block.
@@ -236,14 +236,26 @@ To make later runs faster:
 
 Compiled runtimes are kept in `~/.cache/polkadot-frame-trace/wasm`.
 
+## `runtime cache: …; runtimes are compiled again each run`
+
+```text
+warning: runtime cache: …; runtimes are compiled again each run
+```
+
+The cache folder is not writable or is not private to this user.
+Replays still work, but runtimes must be compiled again each run.
+
+Make `$XDG_CACHE_HOME` (or `~/.cache`) writable and keep `polkadot-frame-trace` private to the user running the command.
+For systemd, use the cache settings in [Run it as a service](guides/follow-new-blocks.md#5-run-it-as-a-service).
+
 ## `failed to lookup address information`
 
 ```text
 root check: NOT VERIFIED; RPC calls: 4
-Error: RPC error: chain_getFinalizedHead: connect wss://asset-hub-westend-rpc.dwellir.com: IO error: failed to lookup address information: nodename nor servname provided, or not known
+Error: RPC error: chain_getFinalizedHead: http://frame-trace.invalid: error sending request: client error (Connect): dns error: error resolving DNS: failed to lookup address information: nodename nor servname provided, or not known
 ```
 
-This run used `--block finalized`, so the first request was `chain_getFinalizedHead`.
+This run used `--rpc http://frame-trace.invalid --block finalized`, so the first request was `chain_getFinalizedHead`.
 With a block number it would be `chain_getBlockHash`.
 
 The RPC host name does not resolve.

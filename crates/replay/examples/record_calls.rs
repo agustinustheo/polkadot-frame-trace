@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         HashDB::insert(&mut memory, EMPTY_PREFIX, &unhex(node)?);
     }
     let backend = sp_state_machine::TrieBackendBuilder::new(memory, parent.state_root).build();
-    let session = ReplaySession::new()?;
+    let session = ReplaySession::new();
     let alice = "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
     let name = "call-people-nonce";
     let mut artifact = original.clone();

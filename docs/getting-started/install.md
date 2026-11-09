@@ -20,6 +20,7 @@ Each release has an archive for these systems:
 | macOS, Intel | `x86_64-apple-darwin` |
 
 The Linux binaries need glibc 2.35 or newer, as in Ubuntu 22.04.
+HTTPS endpoints are checked against the system's certificate store; on minimal Linux systems and containers, install `ca-certificates`.
 
 Find the newest version on the [releases page](https://github.com/agustinustheo/polkadot-frame-trace/releases/latest).
 Download it with your version and target:

@@ -129,6 +129,8 @@ TimeoutStopSec=45
 Restart=on-failure
 RestartSec=10
 DynamicUser=yes
+CacheDirectory=polkadot-frame-trace
+Environment=XDG_CACHE_HOME=/var/cache
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict

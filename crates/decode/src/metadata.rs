@@ -660,9 +660,13 @@ mod hook_order_tests {
             md.hook_instances("pallet_balances", "on_idle", None)
                 .is_none()
         );
-        let raw = polkadot_frame_trace_model::rpc::parse_trace_block(include_str!(
-            "../../../fixtures/model/two-extrinsics.json"
-        ))
+        let raw = serde_json::from_value::<polkadot_frame_trace_model::rpc::BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../fixtures/model/two-extrinsics.json"
+            ))
+            .expect("JSON")["result"]["blockTrace"]
+                .take(),
+        )
         .expect("trace");
         let mut block = polkadot_frame_trace_model::TracedBlock::from_trace(&raw).expect("block");
         block.runtime_spans = (1..=2)

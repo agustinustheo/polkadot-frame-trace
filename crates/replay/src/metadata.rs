@@ -208,7 +208,7 @@ mod tests {
         if let Some(path) = std::env::var_os(CHILD_PATH) {
             let mut artifact = Artifact::load(std::path::Path::new(&path)).unwrap();
             let expected = artifact.metadata.clone();
-            let session = ReplaySession::new().unwrap();
+            let session = ReplaySession::new();
             let state: Header = serde_json::from_value(artifact.parent_header.clone()).unwrap();
             let db = open_db(&artifact, None, &session, &state).unwrap();
             let (wasm, heap) = runtime_code(&db, *state.state_root()).unwrap();
@@ -299,7 +299,7 @@ mod tests {
                 metadata: String::new(),
                 proof_nodes: vec![],
             };
-            let session = ReplaySession::new().unwrap();
+            let session = ReplaySession::new();
             for _ in 0..2 {
                 // Each database has a fresh export set, as for another block after a cache hit.
                 let db = ProofDb::with_session(None, state.hash(), session.clone());

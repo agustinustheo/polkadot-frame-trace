@@ -106,7 +106,7 @@ pub fn run(args: ReportArgs) -> Result<()> {
             args.rpc_timeout,
             Default::default(),
         )?;
-        let session = ReplaySession::new()?;
+        let session = ReplaySession::new();
         let header = rpc.finalized_header()?;
         let finalized = u64::from_str_radix(
             header["number"]
@@ -878,7 +878,11 @@ mod tests {
     use super::*;
     fn trace() -> AnnotatedBlock {
         let json = include_str!("../../../fixtures/model/two-extrinsics.json");
-        let raw = polkadot_frame_trace_model::rpc::parse_trace_block(json).expect("fixture");
+        let raw = serde_json::from_value::<polkadot_frame_trace_model::rpc::BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(json).expect("JSON")["result"]["blockTrace"]
+                .take(),
+        )
+        .expect("fixture");
         let traced = polkadot_frame_trace_model::TracedBlock::from_trace(&raw).expect("trace");
         polkadot_frame_trace_decode::annotate(&traced, None)
     }

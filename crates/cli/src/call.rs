@@ -78,7 +78,7 @@ pub fn run(args: CallArgs) -> Result<()> {
         .map(|s| serde_json::from_str::<serde_json::Value>(s).context("--args: malformed JSON"))
         .transpose()?;
     let runtime_override = super::source::read_runtime_override(args.runtime_override.as_deref())?;
-    let session = ReplaySession::new()?.with_runtime_override(runtime_override);
+    let session = ReplaySession::new().with_runtime_override(runtime_override);
     let (artifact, rpc) = if let Some(dir) = &args.offline {
         (Artifact::load(dir)?, None)
     } else {
