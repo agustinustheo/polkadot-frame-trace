@@ -3502,6 +3502,7 @@ dependencies = [
  "frame-metadata",
  "hash-db",
  "hex",
+ "httpdate",
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",

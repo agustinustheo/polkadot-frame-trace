@@ -36,7 +36,7 @@ polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send the trace over OTLP/HTTP. |
 | `--json <FILE>` | | Write the trace as JSON. `-` writes to stdout. |
 | `--top <N>` | 15 | Rows in each item, extrinsic and hook table, and per phase in the duplicate reads table. |
-| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
+| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. The whole call, including rate-limit waits, gets four times this budget, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 | `--runtime-override <WASM>` | | Run this Wasm instead of the chain's runtime. See [See runtime calls inside extrinsics](../guides/see-runtime-calls.md). Cannot be combined with `--save`. |
 
 Without `--otlp` or `--json`, `block` prints storage summary tables.
@@ -86,7 +86,7 @@ polkadot-frame-trace call --offline fixtures/replay/call-people-nonce
 | `--check-state-call` | off | Compare the result with the node's `state_call` at the same block. |
 | `--json <FILE>` | | Write the trace and result as JSON. `-` writes to stdout and sends tables to stderr. |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send the trace over OTLP/HTTP. |
-| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
+| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. The whole call, including rate-limit waits, gets four times this budget, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 | `--runtime-override <WASM>` | | As for `block`. |
 
 `call` prints storage summary tables by default. With `--json -`, the tables go to stderr.
@@ -107,7 +107,7 @@ polkadot-frame-trace report --rpc URL --last 10
 | `--to <N>` | | Last block of the range, included. At most the latest finalized block. |
 | `--last <K>` | | The K most recent finalized blocks. |
 | `--workers <N>` | 2 | Blocks replayed at once, 1 to 4. |
-| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
+| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. The whole call, including rate-limit waits, gets four times this budget, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 | `--top <N>` | 15 | Rows in each ranked table. JSON is always complete. |
 | `--sort-by <proof\|ops\|time>` | `proof` | Rank items, extrinsics and hooks by proof bytes, operations or storage time. |
 | `--json <FILE>` | | Write the report as JSON. `-` writes it to stdout and the tables to stderr. |
@@ -126,7 +126,7 @@ polkadot-frame-trace follow --rpc URL --otlp
 | `--rpc <URL>` | | Node RPC endpoint. Required. See [supported URLs](support.md#nodes). |
 | `--otlp [<URL>]` | `http://127.0.0.1:4318` when given without a URL | Send each trace over OTLP/HTTP. |
 | `--workers <N>` | 8 | Blocks replayed at once, 1 to 16. |
-| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. A request gets four tries, so it can take four times this, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
+| `--rpc-timeout <SECONDS>` | 30 | Longest wait for one RPC response, more than 0 and at most 3600 seconds. The whole call, including rate-limit waits, gets four times this budget, 2 minutes by default. Raise it for a node that takes longer to send a large proof. |
 
 | Limit | Value | Meaning |
 | --- | --- | --- |

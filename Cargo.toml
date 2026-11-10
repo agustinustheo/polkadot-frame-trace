@@ -24,6 +24,7 @@ frame-decode = { version = "0.18.1", default-features = false, features = ["std"
 frame-metadata = { version = "23.0.1", default-features = false, features = ["current", "decode", "std"] }
 hash-db = "0.16"
 hex = "0.4.3"
+httpdate = "1"
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }

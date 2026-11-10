@@ -29,7 +29,7 @@ pub struct ReportArgs {
     /// Concurrent block replays.
     #[arg(long, default_value_t=2, requires = "rpc", conflicts_with_all = ["files"], value_parser=clap::value_parser!(u8).range(1..=4))]
     workers: u8,
-    /// Longest wait in seconds for one RPC response; each request gets four tries.
+    /// Longest wait in seconds per attempt; the whole RPC call has four times this budget.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = crate::source::rpc_timeout, requires = "rpc", conflicts_with_all = ["files"])]
     rpc_timeout: std::time::Duration,
     /// Maximum rows in each ranked item, extrinsic and hook table (JSON is complete).

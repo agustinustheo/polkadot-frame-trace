@@ -54,7 +54,7 @@ pub struct CallArgs {
     /// OTLP/HTTP endpoint (bare --otlp uses http://127.0.0.1:4318).
     #[arg(long, num_args = 0..=1, default_missing_value = "http://127.0.0.1:4318")]
     otlp: Option<String>,
-    /// Longest wait in seconds for one RPC response; each request gets four tries.
+    /// Longest wait in seconds per attempt; the whole RPC call has four times this budget.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = super::source::rpc_timeout, requires = "rpc", conflicts_with = "offline")]
     rpc_timeout: Duration,
     /// Execute this Wasm instead of the authenticated :code, for example the same runtime

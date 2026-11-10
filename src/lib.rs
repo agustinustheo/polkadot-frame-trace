@@ -198,7 +198,7 @@ struct FollowArgs {
     /// Blocks replayed at once (1–16).
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u8).range(1..=16))]
     workers: u8,
-    /// Longest wait in seconds for one RPC response; each request gets four tries.
+    /// Longest wait in seconds per attempt; the whole RPC call has four times this budget.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = source::rpc_timeout)]
     rpc_timeout: std::time::Duration,
 }

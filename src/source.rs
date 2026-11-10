@@ -37,7 +37,7 @@ pub struct SourceArgs {
     /// Save the replay context and proofs for offline use.
     #[arg(long, value_name = "DIR")]
     pub save: Option<PathBuf>,
-    /// Longest wait in seconds for one RPC response; each request gets four tries.
+    /// Longest wait in seconds per attempt; the whole RPC call has four times this budget.
     #[arg(long, value_name = "SECONDS", default_value = "30", value_parser = rpc_timeout, requires = "rpc", conflicts_with_all = ["from_json", "offline"])]
     pub rpc_timeout: Duration,
     /// Execute this Wasm instead of the authenticated :code, for example the same runtime
@@ -110,7 +110,8 @@ pub fn warn_unencrypted(flag: &str, url: &str) {
     }
 }
 
-/// A node client. `timeout` bounds each try; a request gets four tries within four times it.
+/// A node client. `timeout` bounds each try; the whole call, including rate-limit waits,
+/// gets four times it.
 pub fn rpc(
     url: &str,
     concurrency: usize,

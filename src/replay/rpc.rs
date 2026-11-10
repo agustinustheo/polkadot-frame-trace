@@ -68,7 +68,8 @@ fn runtime() -> Result<&'static Runtime> {
 impl Rpc {
     /// Lazy connections. DNS, TCP and TLS share a ten-second connect deadline;
     /// the logical call (including retries) has a two-minute deadline after a slot is acquired,
-    /// and each of its four attempts a quarter of that. Public nodes can take 20 s or more to
+    /// and each attempt a quarter of that. Rate limits wait within the overall deadline;
+    /// other transient failures get four attempts. Public nodes can take 20 s or more to
     /// prove `:code`.
     pub fn new(url: &str) -> Result<Self> {
         Self::with_options(url, 8, Duration::from_secs(120), CancellationToken::new())
@@ -208,7 +209,9 @@ impl Rpc {
         })
     }
     async fn retry(&self, method: &str, params: Value) -> Result<Value> {
-        for attempt in 0..4 {
+        let mut attempt = 0;
+        let mut rate_limits = 0;
+        loop {
             let id = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             let request = json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params});
             // A quarter of the call's deadline, so four attempts fit. A slow node needs a longer
@@ -216,7 +219,7 @@ impl Rpc {
             let attempt_deadline = self.inner.deadline / 4;
             let response = tokio::time::timeout(attempt_deadline, self.once(&request))
                 .await
-                .unwrap_or_else(|_| Err(("attempt deadline exceeded".into(), true)));
+                .unwrap_or_else(|_| Err(("attempt deadline exceeded".into(), true, None)));
             match response {
                 Ok(body) => {
                     if body["jsonrpc"] != "2.0" || body["id"] != id && !null_id_error(&body) {
@@ -226,10 +229,9 @@ impl Rpc {
                     }
                     if let Some(error) = body.get("error").filter(|e| !e.is_null()) {
                         let lower = error.to_string().to_lowercase();
-                        if attempt < 3
-                            && (error["code"] == 429 || lower.contains("too many requests"))
-                        {
-                            self.backoff(attempt, id).await;
+                        if error["code"] == 429 || lower.contains("too many requests") {
+                            self.backoff(rate_limits, id, Some(Duration::ZERO)).await;
+                            rate_limits += 1;
                             continue;
                         }
                         // The node's text is printed: bounded, and without control characters.
@@ -243,9 +245,6 @@ impl Rpc {
                                 "{message}; parent state may be pruned (use an archive endpoint)"
                             )));
                         }
-                        if error["code"] == 429 || lower.contains("too many requests") {
-                            return Err(Error::TransientRpc(message));
-                        }
                         return Err(Error::RpcResponse {
                             method: method.into(),
                             code: error["code"].as_i64().unwrap_or(-32603),
@@ -257,7 +256,12 @@ impl Rpc {
                         .cloned()
                         .ok_or_else(|| Error::Rpc(format!("{method}: no result")));
                 }
-                Err((message, transient)) => {
+                Err((message, transient, retry_after)) => {
+                    if retry_after.is_some() {
+                        self.backoff(rate_limits, id, retry_after).await;
+                        rate_limits += 1;
+                        continue;
+                    }
                     if !transient || attempt == 3 {
                         return Err(if transient {
                             Error::TransientRpc(format!("{method}: {message}"))
@@ -265,23 +269,27 @@ impl Rpc {
                             Error::Rpc(format!("{method}: {message}"))
                         });
                     }
-                    self.backoff(attempt, id).await;
+                    self.backoff(attempt, id, None).await;
+                    attempt += 1;
                 }
             }
         }
-        unreachable!("bounded retry loop returns on last attempt")
     }
-    async fn backoff(&self, attempt: u32, id: usize) {
+    async fn backoff(&self, attempt: u32, id: usize, retry_after: Option<Duration>) {
         // Capped exponential delay, with per-request and wall-clock jitter to avoid herding.
         let jitter = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |t| (t.subsec_nanos() as u64 ^ id as u64) % 101);
-        tokio::time::sleep(Duration::from_millis(
-            (100u64 << attempt).min(2000) + jitter,
-        ))
-        .await;
+        let delay = match retry_after {
+            Some(minimum) => Duration::from_secs((1 << attempt.min(5)).min(30)).max(minimum),
+            None => Duration::from_millis((100u64 << attempt).min(2000)),
+        };
+        tokio::time::sleep(delay.min(self.inner.deadline) + Duration::from_millis(jitter)).await;
     }
-    async fn once(&self, request: &Value) -> std::result::Result<Value, (String, bool)> {
+    async fn once(
+        &self,
+        request: &Value,
+    ) -> std::result::Result<Value, (String, bool, Option<Duration>)> {
         let response = self
             .inner
             .http
@@ -295,6 +303,7 @@ impl Rpc {
                 (
                     format!("{shown}: {}", with_sources(&e.without_url())),
                     transient,
+                    None,
                 )
             })?;
         let status = response.status();
@@ -302,6 +311,25 @@ impl Rpc {
             return Err((
                 format!("HTTP {status}"),
                 status.as_u16() == 429 || status.is_server_error(),
+                (status.as_u16() == 429).then(|| {
+                    response
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| {
+                            value
+                                .parse::<u64>()
+                                .ok()
+                                .map(Duration::from_secs)
+                                .or_else(|| {
+                                    httpdate::parse_http_date(value).ok().map(|when| {
+                                        when.duration_since(std::time::SystemTime::now())
+                                            .unwrap_or_default()
+                                    })
+                                })
+                        })
+                        .unwrap_or_default()
+                }),
             ));
         }
         let mut response = response;
@@ -309,14 +337,14 @@ impl Rpc {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| (with_sources(&e.without_url()), true))?
+            .map_err(|e| (with_sources(&e.without_url()), true, None))?
         {
             if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err((too_large(), false));
+                return Err((too_large(), false, None));
             }
             body.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&body).map_err(|e| (format!("malformed response: {e}"), false))
+        serde_json::from_slice(&body).map_err(|e| (format!("malformed response: {e}"), false, None))
     }
     pub(crate) fn count(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
@@ -413,9 +441,14 @@ mod tests {
                 }
                 let status = if status == 0 { 200 } else { status };
                 let body = body.replace("$ID", &request["id"].to_string());
+                let retry_after = if status == 429 {
+                    "retry-after: 2\r\n"
+                } else {
+                    ""
+                };
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 {status} Test\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} Test\r\n{retry_after}content-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
             }
@@ -473,20 +506,26 @@ mod tests {
         worker.join().unwrap();
     }
     #[test]
-    fn rate_limits_are_retried_until_exhausted_then_transient_and_cancellation_is_typed() {
-        // HTTP 429 and JSON-RPC 429 errors are retried.
+    fn rate_limits_wait_past_four_tries_within_the_deadline_and_cancellation_is_typed() {
+        // Both kinds of rate limit can recover after more than four tries. HTTP Retry-After
+        // is a minimum delay, even on the first attempt.
         let (rpc, worker) = responses(vec![
             (429, "rate limited"),
             (
                 200,
                 r#"{"jsonrpc":"2.0","id":$ID,"error":{"code":429,"message":"busy"}}"#,
             ),
+            (429, "rate limited"),
+            (429, "rate limited"),
             (200, r#"{"jsonrpc":"2.0","id":$ID,"result":"ok"}"#),
         ]);
+        let start = std::time::Instant::now();
         assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), "ok");
-        assert_eq!(rpc.count(), 3);
+        assert!(start.elapsed() >= Duration::from_secs(16));
+        assert_eq!(rpc.count(), 5);
         worker.join().unwrap();
-        let (rpc, worker) = responses(vec![(429, "busy"); 4]);
+        // Ordinary transport failures still get only four attempts.
+        let (rpc, worker) = responses(vec![(503, "busy"); 4]);
         assert!(
             rpc.call("chain_getHeader", json!([]))
                 .unwrap_err()
@@ -494,7 +533,27 @@ mod tests {
         );
         assert_eq!(rpc.count(), 4);
         worker.join().unwrap();
+        // A Retry-After longer than the remaining budget cannot extend the deadline.
+        let (mut rpc, worker) = responses(vec![(429, "busy")]);
+        Arc::get_mut(&mut rpc.inner).unwrap().deadline = Duration::from_millis(200);
+        let start = std::time::Instant::now();
+        let error = rpc.call("chain_getHeader", json!([])).unwrap_err();
+        assert!(error.is_transient());
+        assert!(
+            error
+                .to_string()
+                .contains("overall request deadline exceeded")
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(rpc.count(), 1);
+        worker.join().unwrap();
+        // Cancellation interrupts the rate-limit sleep.
+        let (rpc, worker) = responses(vec![(429, "busy")]);
+        let fork = rpc.fork();
+        let caller = thread::spawn(move || fork.call("chain_getHeader", json!([])));
+        worker.join().unwrap();
         rpc.inner.cancel.cancel();
+        assert!(matches!(caller.join().unwrap(), Err(Error::Cancelled)));
         assert!(matches!(
             rpc.call("chain_getHeader", json!([])),
             Err(Error::Cancelled)
