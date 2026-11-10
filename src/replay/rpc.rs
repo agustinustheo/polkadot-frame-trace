@@ -281,7 +281,7 @@ impl Rpc {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |t| (t.subsec_nanos() as u64 ^ id as u64) % 101);
         let delay = match retry_after {
-            Some(minimum) => Duration::from_secs((1 << attempt.min(5)).min(30)).max(minimum),
+            Some(minimum) => Duration::from_secs(1 << attempt.min(1)).max(minimum),
             None => Duration::from_millis((100u64 << attempt).min(2000)),
         };
         tokio::time::sleep(delay.min(self.inner.deadline) + Duration::from_millis(jitter)).await;
@@ -521,7 +521,7 @@ mod tests {
         ]);
         let start = std::time::Instant::now();
         assert_eq!(rpc.call("chain_getHeader", json!([])).unwrap(), "ok");
-        assert!(start.elapsed() >= Duration::from_secs(16));
+        assert!(start.elapsed() >= Duration::from_secs(8));
         assert_eq!(rpc.count(), 5);
         worker.join().unwrap();
         // Ordinary transport failures still get only four attempts.
