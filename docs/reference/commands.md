@@ -7,6 +7,7 @@ This page lists every command and flag, taken from `polkadot-frame-trace <comman
 | [`block`](#block) | Trace storage use in one block and export it to JSON or a trace viewer. |
 | [`call`](#call) | Trace storage use and the result of a runtime API call. |
 | [`report`](#report) | Compare storage use across saved blocks or a range of finalized blocks. |
+| [`diff`](#diff) | Compare two block traces and check regression budgets. |
 | [`follow`](#follow) | Trace new finalized blocks as they arrive (experimental). |
 
 ## Sources
@@ -115,6 +116,92 @@ polkadot-frame-trace report --rpc URL --last 10
 A range holds at most 10,000 blocks.
 `--workers` and `--rpc-timeout` need `--rpc`; with saved files they are refused.
 
+## diff
+
+Compare [proof bytes](../concepts/proof-bytes.md) and storage operations between two block traces.
+The tables show totals, [phases](../concepts/phases.md) and changed storage items.
+
+Run these commands from the repository root.
+
+```sh
+polkadot-frame-trace block --offline fixtures/replay/people-transfer --json before.json
+```
+
+```text
+root check: PASS; RPC calls: 0 (timed replay: 0); execution proof: 6479 bytes
+...
+```
+
+```sh
+polkadot-frame-trace block --offline fixtures/replay/people-traced --json after.json
+```
+
+```text
+root check: PASS; RPC calls: 0 (timed replay: 0); execution proof: 6586 bytes
+...
+```
+
+```sh
+polkadot-frame-trace diff before.json after.json --max-proof-delta 0 --json diff.json
+```
+
+```text
+Overview
+...
+│ proof bytes                    ┆       6479 ┆       6586 ┆       +107 ┆    +1.7% │
+...
+regression: proof bytes delta +107 exceeds 0 (--max-proof-delta)
+```
+
+Use two saved `block --json` files or replay one saved block with two runtimes.
+Extract the traced People runtime from the fixture with `zstd`, `jq` and `xxd`.
+
+```sh
+zstd -dc fixtures/replay/people-traced/artifact.json.zst |
+  jq -r '.proof_nodes | max_by(length) | ltrimstr("0x")' |
+  xxd -r -p > candidate.wasm
+```
+
+This writes `candidate.wasm` in the repository root.
+
+```sh
+polkadot-frame-trace diff --offline fixtures/replay/people-transfer --runtime-override candidate.wasm
+```
+
+```text
+root check: PASS; RPC calls: 0 (timed replay: 0); execution proof: 6479 bytes
+...
+root check: PASS with RUNTIME OVERRIDE; RPC calls: 0 (timed replay: 0); execution proof: 6479 bytes
+...
+```
+
+The first replay uses the chain's runtime. The second replay uses `candidate.wasm`.
+The candidate must reach the same state root as the block header, or the replay fails with exit code 1.
+Use `--offline` with `--runtime-override` for tracing, read-path or optimization changes that preserve final state.
+
+| Input or flag | Default | Meaning |
+| --- | --- | --- |
+| `<BEFORE.json> <AFTER.json>` | | Two traces from `block --json`. |
+| `--offline <DIR>` | | Replay one saved block twice with no network. Requires `--runtime-override`. |
+| `--runtime-override <WASM>` | | Use this runtime for the second replay. Requires `--offline`. |
+| `--top <N>` | 15 | Maximum item rows and maximum extrinsic rows in the tables. |
+| `--sort-by <proof\|ops\|reads\|duplicates>` | `proof` | Rank items and select extrinsics by absolute change in proof bytes, operations, reads or duplicate reads. |
+| `--json <FILE>` | | Write all phase and changed item deltas as JSON. `-` writes to stdout and sends tables to stderr. |
+| `--max-proof-delta <BYTES>` | | Maximum increase in proof bytes. |
+| `--max-ops-delta <N>` | | Maximum increase in storage operations. |
+| `--max-duplicate-reads-delta <N>` | | Maximum increase in duplicate reads. |
+
+Each budget compares the after total minus the before total with the limit.
+Use `0` to require no increase or a negative limit to require a decrease.
+When a delta exceeds its limit, `diff` prints a `regression:` line to stderr and exits with code 4.
+It still prints the tables and writes any requested JSON.
+
+The block proof total uses `execution.proof_bytes` when both traces have it, and complete operation proof sums otherwise.
+If either input lacks proof data, `diff` prints `n/a` or `(partial)` and exits with code 1 when `--max-proof-delta` is set.
+If `execution.proof_bytes` differs from the attributed operation sum, `diff` warns on stderr and uses `execution.proof_bytes`.
+The change column shows `—` when the before value is zero or when proof or timing data is unavailable.
+The tables show [local replay timings](../concepts/timings.md) in microseconds. JSON uses nanoseconds.
+
 ## follow
 
 > **Warning:** `follow` is experimental. Long runs may grow in memory or hit public RPC rate limits. Its flags and behavior may change or be removed.
@@ -180,4 +267,5 @@ See [Headers and authentication](../guides/send-traces.md#headers-and-authentica
 | 1 | The replay, an input or the export failed. For `report`, at least one input failed. For `follow`, see [its exit codes](#follow). |
 | 2 | The command line was wrong, for example a missing or unknown flag. |
 | 3 | `call --check-state-call` found a different result from the node's. JSON, save and export still ran. |
+| 4 | A `diff` regression budget failed. Tables and any requested JSON are written first unless output fails. |
 | 130 | `follow` got a second stop signal and exited at once. |
