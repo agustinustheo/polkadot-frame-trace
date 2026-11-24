@@ -769,7 +769,8 @@ fn follow_mock_node_retries_failed_blocks_observes_new_heads_and_cancels() {
     assert!(stopped.elapsed() < Duration::from_secs(10));
     assert!(failures.load(Ordering::SeqCst) >= 5);
     assert!(
-        text.contains("in-flight=")
+        text.contains("warning: follow is experimental;")
+            && text.contains("in-flight=")
             && text.contains("stopped=")
             && text.contains("follow stopped after ")
             && !text.contains("panicked at")

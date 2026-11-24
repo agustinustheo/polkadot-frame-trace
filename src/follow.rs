@@ -520,6 +520,9 @@ fn follow(args: FollowArgs) -> Result<()> {
         .map(crate::otel::OtlpSender::new)
         .transpose()
         .context("--otlp")?;
+    shout!(
+        "warning: follow is experimental; long runs may grow in memory or hit public RPC limits"
+    );
     let session = ReplaySession::new();
     let capacity = queue_capacity(args.workers);
     let (send, receive) = mpsc::sync_channel::<Job>(capacity);

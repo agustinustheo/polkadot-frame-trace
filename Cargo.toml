@@ -1,6 +1,6 @@
 [package]
 name = "polkadot-frame-trace"
-description = "OpenTelemetry traces of what a Polkadot SDK block did to storage"
+description = "Replay any Polkadot SDK block and trace every storage read, write and proof byte"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"

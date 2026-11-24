@@ -7,7 +7,7 @@ This page lists every command and flag, taken from `polkadot-frame-trace <comman
 | [`block`](#block) | Trace storage use in one block and export it to JSON or a trace viewer. |
 | [`call`](#call) | Trace storage use and the result of a runtime API call. |
 | [`report`](#report) | Compare storage use across saved blocks or a range of finalized blocks. |
-| [`follow`](#follow) | Trace new finalized blocks as they arrive. |
+| [`follow`](#follow) | Trace new finalized blocks as they arrive (experimental). |
 
 ## Sources
 
@@ -116,6 +116,8 @@ A range holds at most 10,000 blocks.
 `--workers` and `--rpc-timeout` need `--rpc`; with saved files they are refused.
 
 ## follow
+
+> **Warning:** `follow` is experimental. Long runs may grow in memory or hit public RPC rate limits. Its flags and behavior may change or be removed.
 
 ```sh
 polkadot-frame-trace follow --rpc URL --otlp

@@ -15,7 +15,7 @@
 - [Trace a runtime API call](guides/trace-a-runtime-api-call.md)
 - [See runtime calls inside extrinsics](guides/see-runtime-calls.md)
 - [Analyse many blocks](guides/analyse-many-blocks.md)
-- [Follow new blocks](guides/follow-new-blocks.md)
+- [Follow new blocks (experimental)](guides/follow-new-blocks.md)
 - [Save a block and replay it offline](guides/save-and-replay.md)
 - [Send traces to Jaeger or Grafana](guides/send-traces.md)
 - [Find storage problems with TraceQL](guides/query-traces-in-grafana.md)

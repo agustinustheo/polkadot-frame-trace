@@ -1,13 +1,13 @@
 # Status
 
-Last updated 7 November 2026.
+Last updated 24 November 2026.
 
 polkadot-frame-trace replays blocks and runtime API calls from safe RPC, with the root check, and exports every storage read and write. The [README](../README.md) lists the features, [support](../docs/reference/support.md) lists the tested chains, and [CHANGELOG.md](../CHANGELOG.md) lists what 0.1.0 adds.
 
 ## Limits
 
 - Replay times are measured on the tracing machine, with tracing on. They show where time goes, not node database latency. Benchmarks stay the source of truth for weights.
-- `follow` keeps up with Westend Asset Hub on 8 workers in our runs, but a slow node or large blocks may fill its queue. See [performance.md](performance.md#follow-throughput-with-8-workers).
+- `follow` is experimental: long runs may grow in memory or hit public RPC rate limits, and a slow node or large blocks may fill its queue. See [performance.md](performance.md#follow-throughput-with-8-workers).
 - The host functions are fixed at build time. See [Add host functions for a chain](README.md#add-host-functions-for-a-chain).
 - Plain `#[pallet::constant]` values are compiled into the runtime and never touch storage, so they are not traced.
 

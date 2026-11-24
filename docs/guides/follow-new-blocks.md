@@ -3,6 +3,8 @@
 `polkadot-frame-trace follow` traces each new finalized block and sends it to your trace viewer.
 Run it next to Jaeger to see a chain's storage work live.
 
+> **Warning:** `follow` is experimental. Long runs may grow in memory or hit public RPC rate limits. Use `block` or `report` for one-off or range traces.
+
 ## 1. Start following
 
 Start Jaeger as in [Your first trace](../getting-started/first-trace.md), then run:

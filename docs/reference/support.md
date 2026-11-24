@@ -51,6 +51,8 @@ See [Troubleshooting](../troubleshooting.md#the-runtime-needs-host-functions-pol
 
 | Chain | How |
 | --- | --- |
+| Polkadot Asset Hub | Public endpoint `https://polkadot-asset-hub-rpc.polkadot.io`, 14 finalized blocks with `block` and `report --last 10` (blocks #23,532,072 through #23,532,198). |
+| Polkadot relay chain | Public endpoint `https://polkadot-rpc.publicnode.com`, 6 finalized blocks with `block` and `report --last 5` (blocks #34,012,427 through #34,012,433). |
 | [Westend Asset Hub](glossary.md#westend-asset-hub) | Public endpoint `wss://westend-asset-hub-rpc.polkadot.io`, with `block`, `report` and `follow`. [Analyse many blocks](../guides/analyse-many-blocks.md) shows a `report` run. A nightly test replays the best block. |
 | Westend Asset Hub runtime upgrade | A nightly test replays the upgrade block #18,985,169 and the next block #18,985,170, the first on the new code, from the public endpoint. |
 | Westend relay chain | A nightly test replays the finalized block from `wss://westend-rpc.polkadot.io`, with the parachain inherent `ParaInherent.enter`. Block #33,614,892 also passed. |

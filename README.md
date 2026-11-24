@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <b>Replay any Polkadot SDK block on your machine and see every storage read and write as a trace.</b>
+  <b>Replay any Polkadot SDK block on your machine and see every storage read, write and proof byte.</b>
 </p>
 
 <p align="center">
@@ -31,21 +31,17 @@
 
 `polkadot-frame-trace` replays a block on your machine with the chain's own runtime, using state from any node's normal RPC.
 It records every storage read and write and checks that the replay reached the block's state root.
-It exports the result as an OpenTelemetry trace for Jaeger or Grafana Tempo, or as JSON.
+It prints ranked storage tables in your terminal, or exports JSON and OpenTelemetry traces for Jaeger and Grafana Tempo.
 
-It is for runtime and pallet developers and chain teams who want to know why a block costs what it does.
+Use it to see why a block costs what it does, with no node changes and no trace viewer required.
 Find the storage items a block reads most, the reads it repeats, and the bytes each one adds to the proof.
-
-![A Utility.batch block in Jaeger. Callouts mark the block, a phase, the runtime calls, a storage read, its origin, its proof bytes and its duration.](https://raw.githubusercontent.com/agustinustheo/polkadot-frame-trace/main/docs/images/hero.png)
-
-*Block #4 of a People chain in Jaeger. (1) The block, (2) the `Utility.batch` extrinsic and (3) the runtime calls inside it. (4) A read of Bob's account, (5) where it was answered, (6) the bytes it added to the proof and (7) its duration.*
 
 ## Start
 
-[Install polkadot-frame-trace](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/install.html), then [open your first trace in Jaeger](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/first-trace.html).
-[Commands and flags](https://agustinustheodorus.com/polkadot-frame-trace/reference/commands.html) lists the commands and outputs.
+[Install polkadot-frame-trace](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/install.html), then [trace a block from any node](https://agustinustheodorus.com/polkadot-frame-trace/guides/trace-a-block.html) or [open your first trace in Jaeger](https://agustinustheodorus.com/polkadot-frame-trace/getting-started/first-trace.html).
+[Commands and flags](https://agustinustheodorus.com/polkadot-frame-trace/reference/commands.html) lists every command and output.
 
-### A replay, as you see it
+### A replay in your terminal
 
 Block #4 of the local People chain is saved in this repository. From a clone, replay it with no network:
 
@@ -80,6 +76,13 @@ Duplicate reads 203 = cache 177, trie (already in proof) 26, trie (new) 0, unkno
 
 `root check: PASS` means the replay reached the same state root as the block header.
 Times are measured on your machine, not on the node. The rest of the output ranks storage items, extrinsics and repeated reads.
+Add `--json -` for structured output, or `--otlp` to inspect the full timeline in Jaeger or Grafana Tempo.
+
+### Inspect the timeline in Jaeger
+
+![A Utility.batch block in Jaeger. Callouts mark the block, a phase, the runtime calls, a storage read, its origin, its proof bytes and its duration.](https://raw.githubusercontent.com/agustinustheo/polkadot-frame-trace/main/docs/images/hero.png)
+
+*Block #4 of a People chain in Jaeger. (1) The block, (2) the `Utility.batch` extrinsic and (3) the runtime calls inside it. (4) A read of Bob's account, (5) where it was answered, (6) the bytes it added to the proof and (7) its duration.*
 
 [What polkadot-frame-trace supports](https://agustinustheodorus.com/polkadot-frame-trace/reference/support.html) lists the chain requirements, tested chains and RPC methods.
 

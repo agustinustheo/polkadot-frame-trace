@@ -1,4 +1,4 @@
-//! `polkadot-frame-trace`: show what a Polkadot SDK block did to storage, as OpenTelemetry traces.
+//! `polkadot-frame-trace`: replay a Polkadot SDK block and trace every storage read, write and proof byte.
 
 use std::{fs, io::Write, path::PathBuf};
 
@@ -54,7 +54,7 @@ enum Command {
         after_help = "Examples:\n  polkadot-frame-trace block --rpc URL --block finalized --otlp\n  polkadot-frame-trace block --offline fixtures/replay/people-traced --json block.json"
     )]
     Block(BlockArgs),
-    /// Trace new finalized blocks as they arrive.
+    /// Trace new finalized blocks as they arrive (experimental).
     #[command(after_help = "Examples:\n  polkadot-frame-trace follow --rpc URL --otlp")]
     Follow(FollowArgs),
 }
@@ -186,7 +186,7 @@ fn emit(
     Ok(())
 }
 
-/// Follow finalized headers at replay speed.
+/// Follow finalized headers at replay speed (experimental).
 #[derive(Args)]
 struct FollowArgs {
     /// Node HTTP(S) or WS(S) safe RPC endpoint.
