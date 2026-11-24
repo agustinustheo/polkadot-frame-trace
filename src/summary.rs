@@ -119,25 +119,31 @@ pub(crate) fn signed(n: i128) -> String {
     }
 }
 
-/// Compares the final `System::BlockWeight` with the measured proof bytes: the whole block,
-/// then the mandatory class (hooks, post inherents and mandatory extrinsics).
+/// Compares the final `System::BlockWeight` with measured proof bytes: the whole block
+/// (using authoritative `execution.proof_bytes` when available), then each dispatch class.
 fn block_weight_lines(block: &AnnotatedBlock) -> String {
     let Some(weight) = block.block_weight else {
         return String::new();
     };
-    let line = |what: &str, charged: u64, measured: &Tally| {
-        format!(
-            "{what}: charged proof {charged}, measured {}, gap {}\n",
-            proof_label(measured),
-            gap_label(measured, charged)
-        )
-    };
     let all = Tally::of(block.all_phases().flat_map(|p| &p.ops));
-    let mut out = line(
-        "Block weight (System::BlockWeight)",
-        weight.total().proof_size,
-        &all,
-    );
+    let exec_proof = block.execution.as_ref().map(|e| e.proof_bytes);
+    let over_attributed =
+        exec_proof.is_some_and(|exec| all.proof_ops_observed > 0 && all.proof_bytes > exec);
+    let mut out = match exec_proof {
+        Some(measured) => {
+            let charged = weight.total().proof_size;
+            let gap = signed(measured as i128 - i128::from(charged));
+            format!(
+                "Block weight (System::BlockWeight): charged proof {charged}, measured {measured}, gap {gap}\n"
+            )
+        }
+        None => format!(
+            "Block weight (System::BlockWeight): charged proof {}, measured {}, gap {}\n",
+            weight.total().proof_size,
+            proof_label(&all),
+            gap_label(&all, weight.total().proof_size),
+        ),
+    };
     // Only when every extrinsic has a class: otherwise the measured side is incomplete.
     let classified = block.all_phases().all(|p| match p.kind.as_str() {
         "apply_extrinsic" => p.dispatch_class.is_some(),
@@ -145,6 +151,46 @@ fn block_weight_lines(block: &AnnotatedBlock) -> String {
         _ => true,
     });
     if classified {
+        let qualifier = if over_attributed {
+            " (operation-attributed; exceeds execution proof)"
+        } else {
+            ""
+        };
+        let class_line = |label: &str, charged: u64, measured: &Tally| {
+            format!(
+                "{label}: charged proof {charged}, measured {}, gap {}{qualifier}\n",
+                proof_label(measured),
+                gap_label(measured, charged),
+            )
+        };
+        let normal_ops: Vec<_> = block
+            .all_phases()
+            .filter(|p| {
+                p.kind == "apply_extrinsic" && p.dispatch_class.as_deref() == Some("normal")
+            })
+            .flat_map(|p| &p.ops)
+            .collect();
+        if weight.normal.proof_size > 0 || !normal_ops.is_empty() {
+            out += &class_line(
+                "Normal class",
+                weight.normal.proof_size,
+                &Tally::of(normal_ops),
+            );
+        }
+        let op_ops: Vec<_> = block
+            .all_phases()
+            .filter(|p| {
+                p.kind == "apply_extrinsic" && p.dispatch_class.as_deref() == Some("operational")
+            })
+            .flat_map(|p| &p.ops)
+            .collect();
+        if weight.operational.proof_size > 0 || !op_ops.is_empty() {
+            out += &class_line(
+                "Operational class",
+                weight.operational.proof_size,
+                &Tally::of(op_ops),
+            );
+        }
         let mandatory = Tally::of(
             block
                 .all_phases()
@@ -153,7 +199,7 @@ fn block_weight_lines(block: &AnnotatedBlock) -> String {
                 })
                 .flat_map(|p| &p.ops),
         );
-        out += &line(
+        out += &class_line(
             "Mandatory class (hooks and mandatory extrinsics)",
             weight.mandatory.proof_size,
             &mandatory,
@@ -334,11 +380,40 @@ mod tests {
         let mandatory = total - normal.unwrap().ops.len() * 10;
         assert!(
             text.contains(&format!(
+                "Normal class: charged proof 100, measured {}, gap {}",
+                normal.unwrap().ops.len() * 10,
+                signed(normal.unwrap().ops.len() as i128 * 10 - 100)
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
                 "Mandatory class (hooks and mandatory extrinsics): charged proof 20, measured {mandatory}, gap +{}",
                 mandatory - 20
             )),
             "{text}"
         );
+        // When execution.proof_bytes is present and lower than operation-attributed proof bytes
+        // (after rollback/re-read), the whole-block comparison uses execution.proof_bytes.
+        block.execution = Some(crate::decode::ExecutionInfo {
+            root_check: true,
+            proof_bytes: 100,
+            rpc_calls: 0,
+            measured_rpc_calls: 0,
+            proof_rounds: 0,
+        });
+        let exec_text = render(&block, 3);
+        assert!(
+            exec_text.contains(
+                "Block weight (System::BlockWeight): charged proof 120, measured 100, gap -20"
+            ),
+            "{exec_text}"
+        );
+        assert!(
+            exec_text.contains("(operation-attributed; exceeds execution proof)"),
+            "{exec_text}"
+        );
+        block.execution = None;
         // An extrinsic without a class leaves the mandatory side unknown.
         block
             .phases

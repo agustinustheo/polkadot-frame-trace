@@ -244,29 +244,60 @@ pub fn annotate_at_block(
     }
 }
 
-/// Each extrinsic's last `ExtrinsicSuccess` or `ExtrinsicFailed` event, and the last
-/// `System::BlockWeight` write. Both come from values already in the trace.
+/// Each extrinsic's last `ExtrinsicSuccess` or `ExtrinsicFailed` event, and the committed
+/// `System::BlockWeight` value. Both come from data already in the trace, with pallet names
+/// and storage prefixes resolved from metadata.
 fn weights(block: &TracedBlock, md: &Metadata) -> (BTreeMap<u32, Dispatch>, Option<BlockWeight>) {
-    let key = |item: &str| {
-        let mut key = sp_crypto_hashing::twox_128(b"System").to_vec();
-        key.extend(sp_crypto_hashing::twox_128(item.as_bytes()));
-        key
+    let Some(sys) = weight::SystemTypes::resolve(md) else {
+        return Default::default();
     };
-    let (events, block_weight_key) = (key("Events"), key("BlockWeight"));
     let mut dispatches = BTreeMap::new();
-    let mut block_weight = None;
-    for op in block.ops.iter().filter(|op| op.child_trie.is_none()) {
-        let (Some(key), Some(value)) = (op.key.complete(), op.value.as_deref()) else {
-            continue;
-        };
-        if op.kind == OpKind::Append && key == events {
-            if let Some(dispatch) = weight::dispatch(md, value) {
+    if let Some((events_key, event_ty)) = sys.events {
+        for op in block
+            .ops
+            .iter()
+            .filter(|op| op.child_trie.is_none() && op.kind == OpKind::Append)
+        {
+            let (Some(key), Some(value)) = (op.key.complete(), op.value.as_deref()) else {
+                continue;
+            };
+            if key == events_key
+                && let Some(dispatch) = weight::dispatch_with_type(md, &sys.pallet, event_ty, value)
+            {
                 dispatches.insert(dispatch.index, dispatch);
             }
-        } else if op.kind == OpKind::Put && key == block_weight_key {
-            block_weight = weight::block_weight(md, value).or(block_weight);
         }
     }
+    let block_weight = sys.block_weight.and_then(|(bw_key, bw_ty)| {
+        // Local replays capture the committed post-execution overlay, immune to rollbacks.
+        if let Some(committed) = &block.committed_values {
+            return committed
+                .get(&bw_key)
+                .and_then(|value| value.as_deref())
+                .and_then(|bytes| weight::block_weight_with_type(md, bw_ty, bytes));
+        }
+        // Fallback for non-replay traces: follow puts and clears in order without keeping stale values.
+        let mut last = None;
+        for op in block.ops.iter().filter(|op| op.child_trie.is_none()) {
+            let Some(key) = op.key.complete() else {
+                continue;
+            };
+            if key != bw_key {
+                continue;
+            }
+            match op.kind {
+                OpKind::Put => {
+                    last = op
+                        .value
+                        .as_deref()
+                        .and_then(|bytes| weight::block_weight_with_type(md, bw_ty, bytes));
+                }
+                OpKind::Clear => last = None,
+                _ => {}
+            }
+        }
+        last
+    });
     (dispatches, block_weight)
 }
 
@@ -588,5 +619,60 @@ mod weight_and_root_tests {
         assert_eq!(loaded.phases[1].charged_weight.unwrap().proof_size, 6283);
         assert_eq!(loaded.phases[1].outcome.as_deref(), Some("failed"));
         assert_eq!(loaded.phases[1].dispatch_class, None);
+    }
+
+    #[test]
+    fn block_weight_respects_committed_overlay_clears_and_undecodable_puts() {
+        let md = Metadata::from_bytes(include_bytes!("../../fixtures/metadata/westend-v16.scale"))
+            .unwrap();
+        let (bw_key, bw_ty) = md
+            .storage_item_key_and_type("System", "BlockWeight")
+            .unwrap();
+        let encode_bw = |normal: u128, mandatory: u128| {
+            let w = |p| {
+                scale_value::Value::named_composite([
+                    ("ref_time", scale_value::Value::u128(1)),
+                    ("proof_size", scale_value::Value::u128(p)),
+                ])
+            };
+            let val = scale_value::Value::named_composite([
+                ("normal", w(normal)),
+                ("operational", w(0)),
+                ("mandatory", w(mandatory)),
+            ]);
+            let mut out = Vec::new();
+            scale_value::scale::encode_as_type(&val, bw_ty, md.types(), &mut out).unwrap();
+            out
+        };
+        let template = block().ops[0].clone();
+        let put_op = |value: Vec<u8>| {
+            let mut op = template.clone();
+            op.kind = OpKind::Put;
+            op.child_trie = None;
+            op.key = PrintedBytes::full(bw_key.to_vec());
+            op.value = Some(value);
+            op
+        };
+        let mut clear_op = template.clone();
+        clear_op.kind = OpKind::Clear;
+        clear_op.child_trie = None;
+        clear_op.key = PrintedBytes::full(bw_key.to_vec());
+        clear_op.value = None;
+
+        // Fallback op scan: a later Clear clears BlockWeight rather than keeping the earlier Put.
+        let mut blk = block();
+        blk.ops = vec![put_op(encode_bw(10, 20)), clear_op];
+        assert_eq!(annotate(&blk, Some(&md)).block_weight, None);
+
+        // Fallback op scan: an undecodable later Put clears the stale earlier value.
+        blk.ops = vec![put_op(encode_bw(10, 20)), put_op(vec![0xff])];
+        assert_eq!(annotate(&blk, Some(&md)).block_weight, None);
+
+        // Local replay committed overlay overrides a rolled-back Put recorded in block.ops.
+        blk.ops = vec![put_op(encode_bw(10, 20)), put_op(encode_bw(999, 888))];
+        blk.committed_values = Some(BTreeMap::from([(bw_key, Some(encode_bw(10, 20)))]));
+        let named = annotate(&blk, Some(&md));
+        assert_eq!(named.block_weight.unwrap().normal.proof_size, 10);
+        assert_eq!(named.block_weight.unwrap().mandatory.proof_size, 20);
     }
 }

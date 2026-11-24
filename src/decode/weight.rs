@@ -53,22 +53,49 @@ pub(crate) struct Dispatch {
     pub outcome: &'static str,
 }
 
-/// Decodes one appended `EventRecord`. `None` unless it is a `System` `ExtrinsicSuccess` or
-/// `ExtrinsicFailed` in an `ApplyExtrinsic` phase with a two-part weight.
-pub(crate) fn dispatch(md: &Metadata, record: &[u8]) -> Option<Dispatch> {
-    let events = md.storage_value_type("System", "Events")?;
-    let ty = match &md.types().resolve(events)?.type_def {
-        scale_info::TypeDef::Sequence(seq) => seq.type_param.id,
-        _ => return None,
-    };
-    let record = decode(md, record, ty)?;
+/// Resolved `frame_system` storage keys and value types for one runtime's metadata.
+#[derive(Debug, Clone)]
+pub(crate) struct SystemTypes {
+    pub pallet: String,
+    pub events: Option<([u8; 32], u32)>,
+    pub block_weight: Option<([u8; 32], u32)>,
+}
+
+impl SystemTypes {
+    pub(crate) fn resolve(md: &Metadata) -> Option<Self> {
+        let pallet = md.system_pallet_name()?;
+        let events =
+            md.storage_item_key_and_type(&pallet, "Events")
+                .and_then(|(key, ty)| match &md.types().resolve(ty)?.type_def {
+                    scale_info::TypeDef::Sequence(seq) => Some((key, seq.type_param.id)),
+                    _ => None,
+                });
+        let block_weight = md.storage_item_key_and_type(&pallet, "BlockWeight");
+        Some(Self {
+            pallet,
+            events,
+            block_weight,
+        })
+    }
+}
+
+/// Decodes one appended `EventRecord` with a pre-resolved pallet name and record type.
+/// `None` unless it is a system `ExtrinsicSuccess` or `ExtrinsicFailed` in an `ApplyExtrinsic`
+/// phase with a two-part weight.
+pub(crate) fn dispatch_with_type(
+    md: &Metadata,
+    system_pallet: &str,
+    record_ty: u32,
+    record: &[u8],
+) -> Option<Dispatch> {
+    let record = decode(md, record, record_ty)?;
     let phase = record.at("phase")?;
     if variant_name(phase)? != "ApplyExtrinsic" {
         return None;
     }
     let index = u32::try_from(phase.at(0)?.as_u128()?).ok()?;
     let event = record.at("event")?;
-    if variant_name(event)? != "System" {
+    if variant_name(event)? != system_pallet {
         return None;
     }
     let event = event.at(0)?;
@@ -90,14 +117,29 @@ pub(crate) fn dispatch(md: &Metadata, record: &[u8]) -> Option<Dispatch> {
     })
 }
 
-/// Decodes a `System::BlockWeight` value (`PerDispatchClass<Weight>`).
-pub(crate) fn block_weight(md: &Metadata, value: &[u8]) -> Option<BlockWeight> {
-    let value = decode(md, value, md.storage_value_type("System", "BlockWeight")?)?;
+/// Decodes one appended `EventRecord`.
+#[cfg(test)]
+pub(crate) fn dispatch(md: &Metadata, record: &[u8]) -> Option<Dispatch> {
+    let sys = SystemTypes::resolve(md)?;
+    let (_, ty) = sys.events?;
+    dispatch_with_type(md, &sys.pallet, ty, record)
+}
+
+/// Decodes a `BlockWeight` value (`PerDispatchClass<Weight>`) with a pre-resolved type.
+pub(crate) fn block_weight_with_type(md: &Metadata, ty: u32, value: &[u8]) -> Option<BlockWeight> {
+    let value = decode(md, value, ty)?;
     Some(BlockWeight {
         normal: weight(value.at("normal")?)?,
         operational: weight(value.at("operational")?)?,
         mandatory: weight(value.at("mandatory")?)?,
     })
+}
+
+/// Decodes a `System::BlockWeight` value (`PerDispatchClass<Weight>`).
+#[cfg(test)]
+pub(crate) fn block_weight(md: &Metadata, value: &[u8]) -> Option<BlockWeight> {
+    let (_, ty) = SystemTypes::resolve(md)?.block_weight?;
+    block_weight_with_type(md, ty, value)
 }
 
 /// The whole value must decode; trailing bytes mean the type does not match.

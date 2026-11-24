@@ -1074,6 +1074,7 @@ mod tests {
                 ops: Vec::new(),
                 phases: Vec::new(),
                 skipped_events: 0,
+                committed_values: None,
             },
             None,
             None,

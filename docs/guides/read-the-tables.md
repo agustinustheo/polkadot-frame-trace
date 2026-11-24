@@ -127,7 +127,7 @@ The same commands rank extrinsic types:
 ```text
 Extrinsic distributions (ranked by total proof bytes)
 │ pallet.call                         ┆ count ┆ operations median/p95 ┆ proof bytes median/p95 ┆ storage time µs median/p95 ┆ charged proof median/p95 ┆ proof gap mean │
-│ Utility.batch                       ┆     1 ┆           200.0/200.0 ┆            827.0/827.0 ┆                581.0/581.0 ┆              605.0/605.0 ┆           +222 │
+│ Utility.batch                       ┆     1 ┆           200.0/200.0 ┆            827.0/827.0 ┆                581.0/581.0 ┆              605.0/605.0 ┆         +222.0 │
 ...
 ```
 
@@ -168,7 +168,7 @@ For many blocks, [use `report`](analyse-many-blocks.md).
 
 ## Find undercharged extrinsics
 
-Compare the proof size each extrinsic paid for with the proof bytes it added.
+Compare the proof size in each extrinsic's dispatch event with the proof bytes it added.
 The charge comes from the extrinsic's `ExtrinsicSuccess` or `ExtrinsicFailed` event.
 polkadot-frame-trace reads these events from the replay, with no extra RPC calls.
 It needs the runtime's metadata, which a replay builds.
@@ -183,25 +183,28 @@ It needs the runtime's metadata, which a replay builds.
 │ extrinsic 2: Utility.batch                       ┆        200 ┆   146 ┆     54 ┆         827 ┆           626.5 ┆        919.9 ┆           605 ┆      +222 │
 ...
 Block weight (System::BlockWeight): charged proof 272391, measured 6586, gap -265805
+Normal class: charged proof 838, measured 827, gap -11
 Mandatory class (hooks and mandatory extrinsics): charged proof 271553, measured 5759, gap -265794
 ```
 
 | Column | Meaning |
 | --- | --- |
-| `charged proof` | The proof size, in bytes, that the extrinsic's weight charged. |
-| `proof gap` | Proof bytes minus charged proof. `+` means the extrinsic added more than it paid for. |
+| `charged proof` | The proof size, in bytes, reported by the extrinsic's dispatch event. |
+| `proof gap` | Proof bytes minus `charged proof`. `+` means the extrinsic added more than the event weight. |
 | `—` | The phase has no event of its own, such as initialization. |
 
-- `Utility.batch` added 827 proof bytes but paid for 605: 222 bytes more than its weight.
-- `ParachainSystem.set_validation_data` charges no proof size, but added 495 bytes.
-- `Timestamp.set` paid for 1,493 bytes and added 139.
+- `Utility.batch` added 827 proof bytes, while its dispatch event reported 605.
+- `ParachainSystem.set_validation_data` reported 0 proof size, and added 495 bytes.
+- `Timestamp.set` reported 1,493 bytes, and added 139.
 
 A negative gap is normal. The first phase that reads a trie node gets its bytes.
-A later extrinsic that reads the same node adds 0 bytes, but its weight still pays for it.
-A positive gap means the extrinsic added more new proof bytes than its weight allows for.
+A later extrinsic that reads the same node adds 0 bytes, while its weight still accounts for it.
+A positive gap shows where an extrinsic added more new proof bytes than its event weight.
 
-The two lines under the table use the block's final `System::BlockWeight`.
-The first compares the charge of all three dispatch classes with the whole block.
-The second compares the mandatory class with initialization, post inherents, finalization and mandatory extrinsics.
-It appears only when every extrinsic has a class.
-Hook weights may be worst-case estimates, so the mandatory class often pays for far more than it uses.
+Runtimes with storage-weight reclaim may also adjust `System::BlockWeight` separately after dispatch.
+In the block above, the normal class charged 838 bytes in `System::BlockWeight` against 827 measured.
+
+The lines under the table compare the block's final committed `System::BlockWeight` with measured proof bytes.
+The whole-block line uses the execution proof when available.
+Per-class lines appear only when every extrinsic has a dispatch class.
+Hook weights may be worst-case estimates, so the mandatory class often accounts for far more than it uses.

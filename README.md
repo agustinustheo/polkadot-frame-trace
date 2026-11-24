@@ -69,6 +69,7 @@ Storage per phase
 │ total                                            ┆        518 ┆   312 ┆    204 ┆        6586 ┆          1573.0 ┆       5863.5 ┆             — ┆         — │
 └──────────────────────────────────────────────────┴────────────┴───────┴────────┴─────────────┴─────────────────┴──────────────┴───────────────┴───────────┘
 Block weight (System::BlockWeight): charged proof 272391, measured 6586, gap -265805
+Normal class: charged proof 838, measured 827, gap -11
 Mandatory class (hooks and mandatory extrinsics): charged proof 271553, measured 5759, gap -265794
 
 1 block(s); 518 operations; reads 312 = cache 231 + trie 81 (already in proof 47, new 34) + unknown 0

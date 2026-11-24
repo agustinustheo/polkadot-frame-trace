@@ -59,6 +59,10 @@ pub struct ReplayCapture {
     pub spans: Vec<RuntimeSpan>,
     #[serde(default)]
     pub transitions: Vec<SpanTransition>,
+    /// Committed post-execution values for small 32-byte keys (`StorageValue`s) after all
+    /// storage transactions resolved. `None` when the trace did not come from local replay.
+    #[serde(skip)]
+    pub committed_values: Option<BTreeMap<[u8; 32], Option<Vec<u8>>>>,
     pub duration_ns: u64,
 }
 
@@ -143,6 +147,7 @@ impl TracedBlock {
                 .and_then(|s| s.parse().ok());
         }
         block.runtime_spans = capture.spans.clone();
+        block.committed_values = capture.committed_values.clone();
         block.timing = Some(MeasuredTiming {
             start_ns: 0,
             duration_ns: capture.duration_ns,

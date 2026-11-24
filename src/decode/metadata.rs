@@ -195,11 +195,37 @@ impl Metadata {
     }
 
     /// The value type of the storage item `pallet::item`.
+    #[cfg(test)]
     pub(crate) fn storage_value_type(&self, pallet: &str, item: &str) -> Option<u32> {
+        self.storage_item_key_and_type(pallet, item)
+            .map(|(_, ty)| ty)
+    }
+
+    /// The 32-byte storage key prefix and value type of `pallet::item`.
+    pub(crate) fn storage_item_key_and_type(
+        &self,
+        pallet: &str,
+        item: &str,
+    ) -> Option<([u8; 32], u32)> {
+        self.items
+            .iter()
+            .find(|(_, i)| i.pallet == pallet && i.name == item)
+            .map(|(key, i)| (*key, i.info.value_id))
+    }
+
+    /// Runtime name of the `frame_system` pallet, including aliases.
+    pub(crate) fn system_pallet_name(&self) -> Option<String> {
+        let names = self.pallets_for_crate("frame_system");
+        if let Some(system) = names.iter().find(|n| n.as_str() == "System") {
+            return Some(system.clone());
+        }
+        if let Some(first) = names.into_iter().next() {
+            return Some(first);
+        }
         self.items
             .values()
-            .find(|i| i.pallet == pallet && i.name == item)
-            .map(|i| i.info.value_id)
+            .any(|i| i.pallet == "System")
+            .then(|| "System".to_owned())
     }
 
     /// Runtime API input/output IDs (V15+). Match the whole export name, allowing underscores in methods.

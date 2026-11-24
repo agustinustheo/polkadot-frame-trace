@@ -23,7 +23,7 @@ Top-level fields:
 | `execution` | The replay result, see below. |
 | `timing` | `start_ns` and `duration_ns` of the whole replay. |
 | `totals` | Counts for the whole block, see [Stats](#stats). |
-| `block_weight` | The block's last `System::BlockWeight` write: `normal`, `operational` and `mandatory`, each with `ref_time` and `proof_size`. Omitted without metadata. |
+| `block_weight` | The block's final committed `System::BlockWeight`: `normal`, `operational` and `mandatory`, each with `ref_time` and `proof_size`. Omitted without metadata. |
 | `phases` | The [phases](../concepts/phases.md), in order. |
 | `runtime_spans` | Spans the runtime reported, with `id`, `parent_id`, `name`, `target`, times, and the proof size at start and end. Empty without a traced runtime. |
 | `skipped_events` | Recorded events that were not storage operations. |

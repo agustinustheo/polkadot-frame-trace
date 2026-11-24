@@ -337,7 +337,7 @@ pub struct ExtrinsicAggregate {
     pub charged_proof_bytes: Option<Distribution>,
     /// Sum of measured minus charged proof bytes, when every sample has both.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_proof_gap_bytes: Option<i64>,
+    pub total_proof_gap_bytes: Option<i128>,
 }
 /// Provenance kept for every input block that ran a substitute runtime.
 #[derive(Serialize)]
@@ -447,7 +447,7 @@ struct ExtrinsicSamples {
     wall: Samples,
     charged: Samples,
     gaps: usize,
-    gap: i64,
+    gap: i128,
     total: Tally,
 }
 #[derive(Serialize)]
@@ -549,14 +549,7 @@ impl Accumulator {
                     if measured {
                         sample.gaps += 1;
                         let gap = tally.proof_bytes as i128 - i128::from(charged);
-                        sample.gap =
-                            sample
-                                .gap
-                                .saturating_add(i64::try_from(gap).unwrap_or(if gap < 0 {
-                                    i64::MIN
-                                } else {
-                                    i64::MAX
-                                }));
+                        sample.gap = sample.gap.saturating_add(gap);
                     }
                 }
                 sample.storage.push(tally.storage_ns);
@@ -757,10 +750,10 @@ pub fn render_body(r: &Report, top: usize, sort: SortKey) -> String {
                     .as_ref()
                     .map_or_else(|| "—".into(), |d| pair(d, 1.0)),
             );
-            row.push(e.total_proof_gap_bytes.map_or_else(
-                || "—".into(),
-                |gap| crate::summary::signed(i128::from(gap) / e.count as i128),
-            ));
+            row.push(
+                e.total_proof_gap_bytes
+                    .map_or_else(|| "—".into(), |gap| signed_mean(gap, e.count)),
+            );
         }
         exts.add_row(row);
     }
@@ -810,6 +803,17 @@ pub fn render_body(r: &Report, top: usize, sort: SortKey) -> String {
     }
     out
 }
+fn signed_mean(total: i128, count: usize) -> String {
+    let mean = total as f64 / count as f64;
+    if mean.abs() < 0.05 {
+        "0.0".into()
+    } else if mean > 0.0 {
+        format!("+{mean:.1}")
+    } else {
+        format!("{mean:.1}")
+    }
+}
+
 /// Substitute runtimes are named before any number they produced.
 pub fn override_lines(r: &Report, top: usize) -> String {
     if r.runtime_overrides.is_empty() {
@@ -1028,14 +1032,18 @@ mod tests {
         }
         let r = aggregate(&[block.clone()]);
         let e = &r.extrinsics["Balances.transfer_keep_alive"];
-        assert_eq!(e.total_proof_gap_bytes, Some(250 * e.count as i64));
+        assert_eq!(e.total_proof_gap_bytes, Some(250 * e.count as i128));
         assert!(e.charged_proof_bytes.is_some());
         let text = render_sorted(&r, 3, SortKey::Proof);
         assert!(
             text.contains("charged proof median/p95 ┆ proof gap mean"),
             "{text}"
         );
-        assert!(text.contains("+250 │"), "{text}");
+        assert!(text.contains("+250.0 │"), "{text}");
+        // Fractional means keep their sign and one decimal place.
+        assert_eq!(signed_mean(1, 2), "+0.5");
+        assert_eq!(signed_mean(-1, 2), "-0.5");
+        assert_eq!(signed_mean(0, 2), "0.0");
         // One sample without a charged weight hides both, rather than mixing samples.
         block
             .phases
