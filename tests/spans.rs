@@ -225,6 +225,7 @@ fn synthetic_block(ops: usize) -> AnnotatedBlock {
         parent_hash: "0x00".into(),
         skipped_events: 0,
         totals: Stats::default(),
+        block_weight: None,
         phases: vec![AnnotatedPhase {
             kind: "unsegmented".into(),
             wall_time: None,
@@ -234,6 +235,10 @@ fn synthetic_block(ops: usize) -> AnnotatedBlock {
             call: None,
             call_error: None,
             label: "unsegmented".into(),
+            charged_weight: None,
+            dispatch_class: None,
+            pays_fee: None,
+            outcome: None,
             stats: Stats::default(),
             ops: (0..ops).map(op).collect(),
             post_inherents: None,

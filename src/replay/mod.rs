@@ -698,6 +698,19 @@ fn execute_method(
                 execution_error(text)
             }
         })?;
+    if method == "Core_execute_block" {
+        let mut committed = std::collections::BTreeMap::new();
+        for (key, entry) in overlay.changes_mut() {
+            let Ok(key) = <[u8; 32]>::try_from(key.as_slice()) else {
+                continue;
+            };
+            let value = entry.value();
+            if value.is_none_or(|v| v.len() <= 256) {
+                committed.insert(key, value.cloned());
+            }
+        }
+        capture.0.lock().committed_values = Some(committed);
+    }
     Ok((recorder.estimate_encoded_size(), output))
 }
 
@@ -806,6 +819,7 @@ fn captured(capture: &Capture, block_hash: H256, parent_hash: H256) -> ReplayCap
         events: data.events.clone(),
         spans: data.spans.iter().map(capture::Span::to_model).collect(),
         transitions: data.transitions.clone(),
+        committed_values: data.committed_values.clone(),
         duration_ns: data
             .spans
             .iter()

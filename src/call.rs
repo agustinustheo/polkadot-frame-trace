@@ -153,6 +153,8 @@ pub fn run(args: CallArgs) -> Result<()> {
         metadata.as_ref(),
     );
     trace.block_number = Some(replay.block_number);
+    // A call is not a block: its `System::BlockWeight` writes say nothing about one.
+    trace.block_weight = None;
     trace.runtime_override =
         super::source::override_info(replay.runtime_override, args.runtime_override.as_deref());
     trace.call = Some(AnnotatedCall {

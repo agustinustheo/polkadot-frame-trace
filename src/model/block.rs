@@ -57,6 +57,9 @@ pub struct TracedBlock {
     pub phases: Vec<Phase>,
     /// Events that were not storage ops.
     pub skipped_events: usize,
+    /// Committed post-execution values for small 32-byte keys (`StorageValue`s) from local
+    /// replay, after storage transaction rollbacks and clears resolved.
+    pub committed_values: Option<std::collections::BTreeMap<[u8; 32], Option<Vec<u8>>>>,
 }
 
 impl TracedBlock {
@@ -80,6 +83,7 @@ impl TracedBlock {
             ops,
             phases,
             skipped_events,
+            committed_values: None,
         })
     }
 

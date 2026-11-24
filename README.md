@@ -57,17 +57,20 @@ state root: computed 0x47116eac39ac59ba0534a0e4d624f78c4c8c56af5c3084e71c98ca181
 block 0x0661899538bf75f600c05c9cc31a01d34e95be6ea6096230a2af6a0074d90637 (parent 0xaa9b6d9f7f0d74a603f7d763724d812f468139427ba81f5f22dc82a7d4026de6)
 
 Storage per phase
-┌──────────────────────────────────────────────────┬────────────┬───────┬────────┬─────────────┬─────────────────┬──────────────┐
-│ phase                                            ┆ operations ┆ reads ┆ writes ┆ proof bytes ┆ storage time µs ┆ wall time µs │
-╞══════════════════════════════════════════════════╪════════════╪═══════╪════════╪═════════════╪═════════════════╪══════════════╡
-│ initialization                                   ┆        152 ┆    74 ┆     77 ┆        3490 ┆           277.0 ┆        486.4 │
-│ extrinsic 0: ParachainSystem.set_validation_data ┆         54 ┆    26 ┆     28 ┆         495 ┆           149.5 ┆        274.2 │
-│ extrinsic 1: Timestamp.set                       ┆         26 ┆    14 ┆     12 ┆         139 ┆            38.3 ┆         54.4 │
-│ extrinsic 2: Utility.batch                       ┆        200 ┆   146 ┆     54 ┆         827 ┆           532.2 ┆        774.0 │
-│   └ post inherents (on_poll)                     ┆         14 ┆    12 ┆      2 ┆         686 ┆            32.4 ┆         38.9 │
-│ finalization                                     ┆         72 ┆    40 ┆     31 ┆         949 ┆           271.7 ┆        452.1 │
-│ total                                            ┆        518 ┆   312 ┆    204 ┆        6586 ┆          1301.1 ┆       4811.4 │
-└──────────────────────────────────────────────────┴────────────┴───────┴────────┴─────────────┴─────────────────┴──────────────┘
+┌──────────────────────────────────────────────────┬────────────┬───────┬────────┬─────────────┬─────────────────┬──────────────┬───────────────┬───────────┐
+│ phase                                            ┆ operations ┆ reads ┆ writes ┆ proof bytes ┆ storage time µs ┆ wall time µs ┆ charged proof ┆ proof gap │
+╞══════════════════════════════════════════════════╪════════════╪═══════╪════════╪═════════════╪═════════════════╪══════════════╪═══════════════╪═══════════╡
+│ initialization                                   ┆        152 ┆    74 ┆     77 ┆        3490 ┆           347.8 ┆        609.0 ┆             — ┆         — │
+│ extrinsic 0: ParachainSystem.set_validation_data ┆         54 ┆    26 ┆     28 ┆         495 ┆           182.5 ┆        410.5 ┆             0 ┆      +495 │
+│ extrinsic 1: Timestamp.set                       ┆         26 ┆    14 ┆     12 ┆         139 ┆            44.0 ┆         65.4 ┆          1493 ┆     -1354 │
+│ extrinsic 2: Utility.batch                       ┆        200 ┆   146 ┆     54 ┆         827 ┆           626.5 ┆        919.9 ┆           605 ┆      +222 │
+│   └ post inherents (on_poll)                     ┆         14 ┆    12 ┆      2 ┆         686 ┆            38.2 ┆         47.0 ┆             — ┆         — │
+│ finalization                                     ┆         72 ┆    40 ┆     31 ┆         949 ┆           334.0 ┆        558.8 ┆             — ┆         — │
+│ total                                            ┆        518 ┆   312 ┆    204 ┆        6586 ┆          1573.0 ┆       5863.5 ┆             — ┆         — │
+└──────────────────────────────────────────────────┴────────────┴───────┴────────┴─────────────┴─────────────────┴──────────────┴───────────────┴───────────┘
+Block weight (System::BlockWeight): charged proof 272391, measured 6586, gap -265805
+Normal class: charged proof 838, measured 827, gap -11
+Mandatory class (hooks and mandatory extrinsics): charged proof 271553, measured 5759, gap -265794
 
 1 block(s); 518 operations; reads 312 = cache 231 + trie 81 (already in proof 47, new 34) + unknown 0
 Duplicate reads 203 = cache 177, trie (already in proof) 26, trie (new) 0, unknown 0; proof 6586 B (518 operations with proof data; 0 B not assigned to operations)

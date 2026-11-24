@@ -534,7 +534,7 @@
       "id": 9,
       "type": "bargauge",
       "title": "Proof bytes by storage item",
-      "description": "Which storage items made the proof bigger. <unknown> covers operations without a storage item, such as storage_root.",
+      "description": "Which storage items made the proof bigger. <storage root> covers computing the state root at the end of the block.",
       "gridPos": {
         "x": 12,
         "y": 11,
