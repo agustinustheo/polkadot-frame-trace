@@ -216,3 +216,20 @@ A distribution is `null` when not every sample had the data, for example `wall_n
 `total_proof_gap_bytes` is the sum of measured proof bytes minus charged proof bytes.
 Both are omitted unless every sample of that extrinsic type has them.
 JSON lists every row; `--top` only limits the terminal tables.
+
+## Diff JSON
+
+`diff --json` compares two block traces:
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | `1`. |
+| `before`, `after` | `block_hash`, `block_number` and `runtime_override` for each side. |
+| `totals` | Block-wide `before`, `after` and `delta` values for `proof_bytes`, `execution_proof_bytes`, `attributed_proof_bytes`, `ops`, `reads`, `writes`, `duplicate_reads`, read origins, `storage_time_ns` and `wall_time_ns`. |
+| `phases` | Per-phase deltas aligned by `kind` and `extrinsic_index`, with `before_label` and `after_label`. |
+| `items` | All changed storage items, ranked by `--sort-by`. Legacy `storage_root` operations are grouped under `<storage root>` or `<child storage root>`. |
+| `regressions` | Exceeded budgets, each with `metric`, `flag`, `max` and `delta`. Empty when every budget passes. |
+
+`totals.proof_bytes` uses `execution.proof_bytes` when both traces have it, and complete operation sums otherwise.
+When either side lacks complete proof data, `delta` is `null`.
+JSON includes all phases and all changed items; `--top` only limits the terminal tables.

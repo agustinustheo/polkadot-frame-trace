@@ -3,7 +3,7 @@ use crate::{
     decode::{AnnotatedBlock, AnnotatedOp, RuntimeOverrideInfo},
     report::{self, Tally},
     source::SourceArgs,
-    summary::table,
+    summary::{signed, table},
 };
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Args, ValueEnum};
@@ -736,14 +736,6 @@ fn omitted(total: usize, top: usize, label: &str) -> String {
         String::new()
     } else {
         format!("… {n} more {label}\n")
-    }
-}
-
-fn signed(value: i128) -> String {
-    if value == 0 {
-        "0".into()
-    } else {
-        format!("{value:+}")
     }
 }
 

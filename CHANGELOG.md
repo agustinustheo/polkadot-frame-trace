@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `diff` to compare two saved `block --json` traces, or replay one offline block against a candidate `--runtime-override` Wasm.
+- Add CI regression budgets (`--max-proof-delta`, `--max-ops-delta`, `--max-duplicate-reads-delta`) that exit with code 4 when exceeded, plus `diff --json` (`schema_version: 1`).
 - `block` shows each extrinsic's charged proof size next to its measured proof bytes, and the gap between them.
   The charge comes from the `ExtrinsicSuccess` and `ExtrinsicFailed` events in the trace, with no extra RPC calls.
 - `block` compares the block's final `System::BlockWeight` with the measured proof bytes.
