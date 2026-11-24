@@ -242,3 +242,59 @@ fn invalid_input_modes_are_clap_errors() {
         assert!(String::from_utf8_lossy(&out.stderr).starts_with("error:"));
     }
 }
+
+#[test]
+fn missing_proof_data_refuses_proof_budget_and_missing_override_fails_fast() {
+    let scratch = Scratch::new("missing-proof");
+    let before = scratch.file("before.json");
+    block_json("people-transfer", &before);
+    let mut no_proof: Value = serde_json::from_slice(&fs::read(&before).unwrap()).unwrap();
+    no_proof["execution"] = Value::Null;
+    for phase in no_proof["phases"].as_array_mut().unwrap() {
+        for op in phase["ops"].as_array_mut().unwrap() {
+            op["proof_bytes_added"] = Value::Null;
+        }
+        if let Some(nested) = phase["post_inherents"].as_object_mut() {
+            for op in nested["ops"].as_array_mut().unwrap() {
+                op["proof_bytes_added"] = Value::Null;
+            }
+        }
+    }
+    let after = scratch.file("after-noproof.json");
+    fs::write(&after, serde_json::to_vec(&no_proof).unwrap()).unwrap();
+
+    // Without a proof budget, diff succeeds and reports n/a / null proof delta.
+    let out = run(
+        command("diff")
+            .arg(&before)
+            .arg(&after)
+            .args(["--json", "-"]),
+        0,
+    );
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["totals"]["proof_bytes"]["delta"].is_null());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("n/a"));
+
+    // With --max-proof-delta, missing proof data fails with exit code 1 (never passes silently).
+    let out = run(
+        command("diff")
+            .arg(&before)
+            .arg(&after)
+            .args(["--max-proof-delta", "0"]),
+        1,
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("proof bytes are missing or incomplete"));
+
+    // Missing --runtime-override fails before replaying the baseline block.
+    let out = run(
+        command("diff")
+            .arg("--offline")
+            .arg(fixture("people-transfer"))
+            .arg("--runtime-override")
+            .arg(scratch.file("does-not-exist.wasm")),
+        1,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("reading --runtime-override"), "{stderr}");
+    assert!(!stderr.contains("root check: PASS"), "{stderr}");
+}

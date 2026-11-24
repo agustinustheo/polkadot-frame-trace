@@ -84,14 +84,22 @@ enum SortKey {
 }
 
 impl SortKey {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Proof => "proof bytes",
+            Self::Ops => "operations",
+            Self::Reads => "reads",
+            Self::Duplicates => "duplicate reads",
+        }
+    }
+
     fn magnitude(self, storage: &StorageDelta) -> u128 {
         match self {
-            Self::Proof => storage.proof_bytes,
-            Self::Ops => storage.ops,
-            Self::Reads => storage.reads,
-            Self::Duplicates => storage.duplicate_reads,
+            Self::Proof => storage.proof_bytes.delta.unwrap_or(0),
+            Self::Ops => storage.ops.delta,
+            Self::Reads => storage.reads.delta,
+            Self::Duplicates => storage.duplicate_reads.delta,
         }
-        .delta
         .unsigned_abs()
     }
 }
@@ -102,6 +110,18 @@ pub struct RegressionExceeded;
 
 pub fn run(args: DiffArgs) -> Result<()> {
     let (before, after) = if let Some(dir) = args.offline {
+        // Validate the candidate Wasm before paying for the baseline replay.
+        if let Some(wasm_path) = args.runtime_override.as_deref() {
+            let wasm = std::fs::read(wasm_path)
+                .with_context(|| format!("reading --runtime-override {}", wasm_path.display()))?;
+            anyhow::ensure!(
+                !wasm.is_empty(),
+                "--runtime-override {} is empty",
+                wasm_path.display()
+            );
+            crate::replay::check_runtime_wasm(&wasm)
+                .with_context(|| format!("--runtime-override {}", wasm_path.display()))?;
+        }
         let mut source = SourceArgs {
             offline: Some(dir),
             runtime_override: None,
@@ -121,7 +141,16 @@ pub fn run(args: DiffArgs) -> Result<()> {
         anyhow::bail!("expected two saved block traces or an offline replay");
     };
 
+    if args.budgets.proof.is_some() && BlockDiff::proof_total(&before, &after).delta.is_none() {
+        anyhow::bail!(
+            "cannot check --max-proof-delta: proof bytes are missing or incomplete in one or both inputs"
+        );
+    }
+
     let diff = BlockDiff::new(&before, &after, args.sort_by, &args.budgets);
+    for warning in &diff.warnings {
+        eprintln!("warning: {warning}");
+    }
     if let Some(path) = &args.json {
         crate::write_json(&diff, path)?;
     }
@@ -163,14 +192,14 @@ impl Delta {
     }
 }
 
-#[derive(Serialize)]
-struct TimingDelta {
+#[derive(Clone, Copy, Serialize)]
+struct OptionalDelta {
     before: Option<u64>,
     after: Option<u64>,
     delta: Option<i128>,
 }
 
-impl TimingDelta {
+impl OptionalDelta {
     fn new(before: Option<u64>, after: Option<u64>) -> Self {
         Self {
             before,
@@ -180,9 +209,47 @@ impl TimingDelta {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProofCoverage {
+    Complete(u64),
+    Partial(u64),
+    Missing,
+}
+
+impl ProofCoverage {
+    fn of(tally: &Tally) -> Self {
+        if tally.ops == 0 || tally.proof_ops_observed == tally.ops {
+            Self::Complete(tally.proof_bytes as u64)
+        } else if tally.proof_ops_observed == 0 {
+            Self::Missing
+        } else {
+            Self::Partial(tally.proof_bytes as u64)
+        }
+    }
+
+    fn complete(self) -> Option<u64> {
+        match self {
+            Self::Complete(n) => Some(n),
+            Self::Partial(_) | Self::Missing => None,
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::Complete(n) => n.to_string(),
+            Self::Partial(n) => format!("{n} (partial)"),
+            Self::Missing => "n/a".into(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct StorageDelta {
-    proof_bytes: Delta,
+    proof_bytes: OptionalDelta,
+    #[serde(skip)]
+    before_proof: ProofCoverage,
+    #[serde(skip)]
+    after_proof: ProofCoverage,
     ops: Delta,
     reads: Delta,
     writes: Delta,
@@ -191,8 +258,12 @@ struct StorageDelta {
 
 impl StorageDelta {
     fn new(before: &Tally, after: &Tally) -> Self {
+        let before_proof = ProofCoverage::of(before);
+        let after_proof = ProofCoverage::of(after);
         Self {
-            proof_bytes: Delta::new(before.proof_bytes as u64, after.proof_bytes as u64),
+            proof_bytes: OptionalDelta::new(before_proof.complete(), after_proof.complete()),
+            before_proof,
+            after_proof,
             ops: Delta::new(before.ops as u64, after.ops as u64),
             reads: Delta::new(before.reads as u64, after.reads as u64),
             writes: Delta::new(before.writes as u64, after.writes as u64),
@@ -201,84 +272,154 @@ impl StorageDelta {
     }
 
     fn changed(&self) -> bool {
-        [
-            self.proof_bytes,
-            self.ops,
-            self.reads,
-            self.writes,
-            self.duplicate_reads,
-        ]
-        .iter()
-        .any(|value| value.delta != 0)
+        self.proof_bytes.delta.is_some_and(|d| d != 0)
+            || [self.ops, self.reads, self.writes, self.duplicate_reads]
+                .iter()
+                .any(|value| value.delta != 0)
     }
 
-    fn row(&self, label: String) -> Vec<String> {
-        vec![
+    fn row(&self, label: String, show_reads: bool) -> Vec<String> {
+        let mut row = vec![
             label,
-            self.proof_bytes.before.to_string(),
-            self.proof_bytes.after.to_string(),
-            signed(self.proof_bytes.delta),
+            self.before_proof.label(),
+            self.after_proof.label(),
+            self.proof_bytes.delta.map_or_else(unavailable, signed),
             signed(self.ops.delta),
-            signed(self.duplicate_reads.delta),
-        ]
+        ];
+        if show_reads {
+            row.push(signed(self.reads.delta));
+        }
+        row.push(signed(self.duplicate_reads.delta));
+        row
     }
 }
 
 #[derive(Serialize)]
 struct Totals {
-    #[serde(flatten)]
-    storage: StorageDelta,
+    /// Authoritative block proof total: uses `execution.proof_bytes` when both traces have it,
+    /// otherwise complete operation-attributed sums. `null` when either side lacks proof data.
+    proof_bytes: OptionalDelta,
+    /// Raw `execution.proof_bytes` from both traces, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_proof_bytes: Option<OptionalDelta>,
+    /// Operation-attributed proof bytes sum (complete sides only).
+    attributed_proof_bytes: OptionalDelta,
+    ops: Delta,
+    reads: Delta,
+    writes: Delta,
+    duplicate_reads: Delta,
     reads_cache: Delta,
     reads_trie_already_in_proof: Delta,
     reads_trie_new: Delta,
-    storage_time_ns: TimingDelta,
-    wall_time_ns: TimingDelta,
+    storage_time_ns: OptionalDelta,
+    wall_time_ns: OptionalDelta,
+    #[serde(skip)]
+    before_proof_label: String,
+    #[serde(skip)]
+    after_proof_label: String,
 }
 
 impl Totals {
-    fn new(before: &AnnotatedBlock, after: &AnnotatedBlock) -> Self {
-        fn tally(block: &AnnotatedBlock) -> (Tally, Option<u64>) {
-            let mut timed = false;
-            let tally = Tally::of(
-                block
-                    .all_phases()
-                    .flat_map(|phase| &phase.ops)
-                    .inspect(|op| {
-                        timed |= op.timing.is_some();
-                    }),
-            );
-            let time = (timed || tally.ops == 0).then_some(tally.storage_ns);
-            (tally, time)
-        }
+    fn tally(block: &AnnotatedBlock) -> (Tally, Option<u64>) {
+        let mut timed = false;
+        let tally = Tally::of(
+            block
+                .all_phases()
+                .flat_map(|phase| &phase.ops)
+                .inspect(|op| {
+                    timed |= op.timing.is_some();
+                }),
+        );
+        let time = (timed || tally.ops == 0).then_some(tally.storage_ns);
+        (tally, time)
+    }
 
-        let (b, bt) = tally(before);
-        let (a, at) = tally(after);
-        Self {
-            storage: StorageDelta::new(&b, &a),
+    fn proof_total_and_warnings(
+        before: &AnnotatedBlock,
+        after: &AnnotatedBlock,
+        b: &Tally,
+        a: &Tally,
+    ) -> (OptionalDelta, String, String, Vec<String>) {
+        let b_cov = ProofCoverage::of(b);
+        let a_cov = ProofCoverage::of(a);
+        let b_exec = before.execution.as_ref().map(|e| e.proof_bytes as u64);
+        let a_exec = after.execution.as_ref().map(|e| e.proof_bytes as u64);
+        let mut warnings = Vec::new();
+        for (side, exec, cov) in [("before", b_exec, b_cov), ("after", a_exec, a_cov)] {
+            if let (Some(exec), Some(attr)) = (exec, cov.complete())
+                && exec != attr
+            {
+                warnings.push(format!(
+                    "{side}: execution proof ({exec} B) differs from attributed operation sum ({attr} B); using execution proof for block totals"
+                ));
+            }
+        }
+        if let (Some(be), Some(ae)) = (b_exec, a_exec) {
+            return (
+                OptionalDelta::new(Some(be), Some(ae)),
+                be.to_string(),
+                ae.to_string(),
+                warnings,
+            );
+        }
+        let b_val = b_exec.or_else(|| b_cov.complete());
+        let a_val = a_exec.or_else(|| a_cov.complete());
+        let b_label = b_exec.map_or_else(|| b_cov.label(), |n| n.to_string());
+        let a_label = a_exec.map_or_else(|| a_cov.label(), |n| n.to_string());
+        (OptionalDelta::new(b_val, a_val), b_label, a_label, warnings)
+    }
+
+    fn new(before: &AnnotatedBlock, after: &AnnotatedBlock) -> (Self, Vec<String>) {
+        let (b, bt) = Self::tally(before);
+        let (a, at) = Self::tally(after);
+        let storage = StorageDelta::new(&b, &a);
+        let (proof_bytes, before_proof_label, after_proof_label, warnings) =
+            Self::proof_total_and_warnings(before, after, &b, &a);
+        let b_exec = before.execution.as_ref().map(|e| e.proof_bytes as u64);
+        let a_exec = after.execution.as_ref().map(|e| e.proof_bytes as u64);
+        let execution_proof_bytes =
+            (b_exec.is_some() || a_exec.is_some()).then(|| OptionalDelta::new(b_exec, a_exec));
+        let totals = Self {
+            proof_bytes,
+            execution_proof_bytes,
+            attributed_proof_bytes: storage.proof_bytes,
+            ops: storage.ops,
+            reads: storage.reads,
+            writes: storage.writes,
+            duplicate_reads: storage.duplicate_reads,
             reads_cache: Delta::new(b.overlay as u64, a.overlay as u64),
             reads_trie_already_in_proof: Delta::new(b.backend_warm as u64, a.backend_warm as u64),
             reads_trie_new: Delta::new(b.backend_cold as u64, a.backend_cold as u64),
-            storage_time_ns: TimingDelta::new(bt, at),
-            wall_time_ns: TimingDelta::new(
+            storage_time_ns: OptionalDelta::new(bt, at),
+            wall_time_ns: OptionalDelta::new(
                 before.timing.map(|t| t.duration_ns),
                 after.timing.map(|t| t.duration_ns),
             ),
-        }
+            before_proof_label,
+            after_proof_label,
+        };
+        (totals, warnings)
     }
 
     fn table(&self) -> comfy_table::Table {
         let mut table = table(1, &["metric", "before", "after", "delta", "change %"]);
+        table.add_row([
+            "proof bytes".into(),
+            self.before_proof_label.clone(),
+            self.after_proof_label.clone(),
+            self.proof_bytes.delta.map_or_else(unavailable, signed),
+            percent(self.proof_bytes.before, self.proof_bytes.delta),
+        ]);
         for (label, value) in [
-            ("proof bytes", self.storage.proof_bytes),
-            ("operations", self.storage.ops),
+            ("operations", self.ops),
             ("reads (cache)", self.reads_cache),
             (
                 "reads (trie: already in proof)",
                 self.reads_trie_already_in_proof,
             ),
             ("reads (trie: new)", self.reads_trie_new),
-            ("writes", self.storage.writes),
-            ("duplicate reads", self.storage.duplicate_reads),
+            ("writes", self.writes),
+            ("duplicate reads", self.duplicate_reads),
         ] {
             table.add_row([
                 label.into(),
@@ -413,6 +554,18 @@ struct ItemDelta<'a> {
     storage: StorageDelta,
 }
 
+fn normalized_item(op: &AnnotatedOp) -> &str {
+    if op.op == "storage_root" {
+        if op.child_trie.is_some() {
+            "<child storage root>"
+        } else {
+            "<storage root>"
+        }
+    } else {
+        &op.item
+    }
+}
+
 fn item_deltas<'a>(
     before: &'a AnnotatedBlock,
     after: &'a AnnotatedBlock,
@@ -421,7 +574,7 @@ fn item_deltas<'a>(
     let mut groups: BTreeMap<&str, [Vec<&AnnotatedOp>; 2]> = BTreeMap::new();
     for (side, block) in [before, after].into_iter().enumerate() {
         for op in block.all_phases().flat_map(|phase| &phase.ops) {
-            groups.entry(&op.item).or_default()[side].push(op);
+            groups.entry(normalized_item(op)).or_default()[side].push(op);
         }
     }
     let mut items: Vec<_> = groups
@@ -448,33 +601,39 @@ struct Regression {
 }
 
 impl Budgets {
-    fn regressions(&self, storage: &StorageDelta) -> Vec<Regression> {
-        [
-            (
-                "proof bytes",
-                "--max-proof-delta",
-                self.proof,
-                storage.proof_bytes,
-            ),
-            ("operations", "--max-ops-delta", self.ops, storage.ops),
+    fn regressions(&self, totals: &Totals) -> Vec<Regression> {
+        let mut out = Vec::new();
+        if let (Some(max), Some(delta)) = (self.proof, totals.proof_bytes.delta)
+            && delta > i128::from(max)
+        {
+            out.push(Regression {
+                metric: "proof bytes",
+                flag: "--max-proof-delta",
+                max,
+                delta,
+            });
+        }
+        for (metric, flag, max, value) in [
+            ("operations", "--max-ops-delta", self.ops, totals.ops),
             (
                 "duplicate reads",
                 "--max-duplicate-reads-delta",
                 self.duplicate_reads,
-                storage.duplicate_reads,
+                totals.duplicate_reads,
             ),
-        ]
-        .into_iter()
-        .filter_map(|(metric, flag, max, value)| {
-            let max = max?;
-            (value.delta > i128::from(max)).then_some(Regression {
-                metric,
-                flag,
-                max,
-                delta: value.delta,
-            })
-        })
-        .collect()
+        ] {
+            if let Some(max) = max
+                && value.delta > i128::from(max)
+            {
+                out.push(Regression {
+                    metric,
+                    flag,
+                    max,
+                    delta: value.delta,
+                });
+            }
+        }
+        out
     }
 }
 
@@ -487,28 +646,38 @@ struct BlockDiff<'a> {
     phases: Vec<PhaseDelta<'a>>,
     items: Vec<ItemDelta<'a>>,
     regressions: Vec<Regression>,
+    #[serde(skip)]
+    warnings: Vec<String>,
 }
 
 impl<'a> BlockDiff<'a> {
+    fn proof_total(before: &AnnotatedBlock, after: &AnnotatedBlock) -> OptionalDelta {
+        let (b, _) = Totals::tally(before);
+        let (a, _) = Totals::tally(after);
+        Totals::proof_total_and_warnings(before, after, &b, &a).0
+    }
+
     fn new(
         before: &'a AnnotatedBlock,
         after: &'a AnnotatedBlock,
         sort: SortKey,
         budgets: &Budgets,
     ) -> Self {
-        let totals = Totals::new(before, after);
+        let (totals, warnings) = Totals::new(before, after);
         Self {
             schema_version: 1,
             before: before.into(),
             after: after.into(),
-            regressions: budgets.regressions(&totals.storage),
+            regressions: budgets.regressions(&totals),
             totals,
             phases: phase_deltas(before, after),
             items: item_deltas(before, after, sort),
+            warnings,
         }
     }
 
     fn render(&self, top: usize, sort: SortKey) -> String {
+        let show_reads = matches!(sort, SortKey::Reads);
         let mut extrinsics: Vec<_> = self
             .phases
             .iter()
@@ -523,40 +692,42 @@ impl<'a> BlockDiff<'a> {
             .take(top)
             .map(|(index, _)| *index)
             .collect();
-        let mut phases = delta_table("phase", "dup reads delta");
+        let mut phases = delta_table("phase", "dup reads delta", show_reads);
         for (index, phase) in self.phases.iter().enumerate() {
             if phase.kind != "apply_extrinsic" || shown.contains(&index) {
-                phases.add_row(phase.storage.row(phase.label()));
+                phases.add_row(phase.storage.row(phase.label(), show_reads));
             }
         }
 
-        let mut items = delta_table("item", "dup delta");
+        let mut items = delta_table("item", "dup delta", show_reads);
         for item in self.items.iter().take(top) {
-            items.add_row(item.storage.row(item.item.to_owned()));
+            items.add_row(item.storage.row(item.item.to_owned(), show_reads));
         }
         format!(
-            "Before: {}\nAfter: {}\n\nOverview\n{}\n\nPhase deltas\n{phases}\n{}\nTop item deltas\n{items}\n{}",
+            "Before: {}\nAfter: {}\n\nOverview\n{}\n\nPhase deltas\n{phases}\n{}\nTop item deltas (ranked by {})\n{items}\n{}",
             self.before.label(),
             self.after.label(),
             self.totals.table(),
             omitted(extrinsics.len(), top, "extrinsics"),
+            sort.label(),
             omitted(self.items.len(), top, "items"),
         )
     }
 }
 
-fn delta_table(label: &str, duplicates: &str) -> comfy_table::Table {
-    table(
-        1,
-        &[
-            label,
-            "before proof",
-            "after proof",
-            "proof delta",
-            "ops delta",
-            duplicates,
-        ],
-    )
+fn delta_table(label: &str, duplicates: &str, show_reads: bool) -> comfy_table::Table {
+    let mut header = vec![
+        label,
+        "before proof",
+        "after proof",
+        "proof delta",
+        "ops delta",
+    ];
+    if show_reads {
+        header.push("reads delta");
+    }
+    header.push(duplicates);
+    table(1, &header)
 }
 
 fn omitted(total: usize, top: usize, label: &str) -> String {
@@ -615,7 +786,7 @@ mod tests {
         assert_eq!(percent(Some(20), Some(-10)), "-50.0%");
         assert_eq!(percent(Some(20), Some(0)), "0.0%");
         assert_eq!(percent(Some(0), Some(10)), "—");
-        assert_eq!(TimingDelta::new(None, Some(10)).delta, None);
+        assert_eq!(OptionalDelta::new(None, Some(10)).delta, None);
     }
 
     #[test]
@@ -716,23 +887,40 @@ mod tests {
         };
         let after = Tally {
             proof_bytes: 100,
+            proof_ops_observed: 1,
             ops: 1,
             duplicates: 2,
             ..Tally::default()
         };
         let storage = StorageDelta::new(&before, &after);
+        let totals = Totals {
+            proof_bytes: storage.proof_bytes,
+            execution_proof_bytes: None,
+            attributed_proof_bytes: storage.proof_bytes,
+            ops: storage.ops,
+            reads: storage.reads,
+            writes: storage.writes,
+            duplicate_reads: storage.duplicate_reads,
+            reads_cache: Delta::new(0, 0),
+            reads_trie_already_in_proof: Delta::new(0, 0),
+            reads_trie_new: Delta::new(0, 0),
+            storage_time_ns: OptionalDelta::new(None, None),
+            wall_time_ns: OptionalDelta::new(None, None),
+            before_proof_label: "0".into(),
+            after_proof_label: "100".into(),
+        };
         let mut budgets = Budgets {
             proof: Some(100),
             ops: None,
             duplicate_reads: Some(-1),
         };
-        assert!(budgets.regressions(&storage).is_empty());
+        assert!(budgets.regressions(&totals).is_empty());
 
         budgets.proof = Some(99);
         budgets.ops = Some(0);
         budgets.duplicate_reads = Some(-2);
         let failed: Vec<_> = budgets
-            .regressions(&storage)
+            .regressions(&totals)
             .into_iter()
             .map(|r| (r.flag, r.delta, r.max))
             .collect();
@@ -744,5 +932,89 @@ mod tests {
                 ("--max-duplicate-reads-delta", -1, -2),
             ]
         );
+    }
+
+    #[test]
+    fn execution_proof_overrides_over_attributed_ops_and_normalizes_storage_roots() {
+        let mut before = fixture();
+        before.phases.truncate(1);
+        before.phases[0].post_inherents = None;
+        before.phases[0].ops.truncate(2);
+        for op in &mut before.phases[0].ops {
+            op.proof_bytes_added = Some(100);
+        }
+        before.phases[0].ops[0].op = "storage_root".into();
+        before.phases[0].ops[0].item = "<unknown>".into();
+        before.execution = Some(crate::decode::ExecutionInfo {
+            root_check: true,
+            proof_bytes: 100,
+            rpc_calls: 0,
+            measured_rpc_calls: 0,
+            proof_rounds: 0,
+        });
+
+        let mut after = before.clone();
+        after.phases[0].ops[0].item = "<storage root>".into();
+        after.phases[0].ops[0].proof_bytes_added = Some(75);
+        after.phases[0].ops[1].proof_bytes_added = Some(75);
+        after.execution.as_mut().expect("exec").proof_bytes = 150;
+
+        let budgets = Budgets {
+            proof: Some(0),
+            ops: None,
+            duplicate_reads: None,
+        };
+        let diff = BlockDiff::new(&before, &after, SortKey::Proof, &budgets);
+        // Execution proof grew 100 -> 150 (+50) even though attributed ops dropped 200 -> 150 (-50).
+        assert_eq!(diff.totals.proof_bytes.delta, Some(50));
+        assert_eq!(diff.totals.attributed_proof_bytes.delta, Some(-50));
+        assert_eq!(diff.regressions.len(), 1);
+        assert_eq!(diff.regressions[0].delta, 50);
+        assert!(
+            diff.warnings
+                .iter()
+                .any(|w| w.contains("differs from attributed operation sum"))
+        );
+
+        // Identical storage_root ops named "<unknown>" vs "<storage root>" produce zero item delta.
+        let mut same_after = before.clone();
+        same_after.phases[0].ops[0].item = "<storage root>".into();
+        let items = item_deltas(&before, &same_after, SortKey::Proof);
+        assert!(
+            items.is_empty(),
+            "phantom storage_root diff: {}",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn missing_or_partial_proof_data_never_reports_zero_delta() {
+        let mut before = fixture();
+        before.phases.truncate(1);
+        before.phases[0].post_inherents = None;
+        before.phases[0].ops.truncate(2);
+        before.execution = None;
+        for op in &mut before.phases[0].ops {
+            op.proof_bytes_added = None;
+        }
+        let after = before.clone();
+        assert_eq!(BlockDiff::proof_total(&before, &after).delta, None);
+
+        // Partial coverage on one side also produces None delta.
+        let mut partial = before.clone();
+        partial.phases[0].ops[0].proof_bytes_added = Some(42);
+        let diff = BlockDiff::new(
+            &before,
+            &partial,
+            SortKey::Proof,
+            &Budgets {
+                proof: None,
+                ops: None,
+                duplicate_reads: None,
+            },
+        );
+        assert_eq!(diff.totals.proof_bytes.delta, None);
+        let rendered = diff.render(5, SortKey::Proof);
+        assert!(rendered.contains("n/a") && rendered.contains("42 (partial)"));
     }
 }

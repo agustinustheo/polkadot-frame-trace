@@ -176,6 +176,8 @@ root check: PASS with RUNTIME OVERRIDE; RPC calls: 0 (timed replay: 0); executio
 ```
 
 The first replay uses the chain's runtime. The second replay uses `candidate.wasm`.
+The candidate must reach the same state root as the block header, or the replay fails with exit code 1.
+Use `--offline` with `--runtime-override` for tracing, read-path or optimization changes that preserve final state.
 
 | Input or flag | Default | Meaning |
 | --- | --- | --- |
@@ -194,8 +196,10 @@ Use `0` to require no increase or a negative limit to require a decrease.
 When a delta exceeds its limit, `diff` prints a `regression:` line to stderr and exits with code 4.
 It still prints the tables and writes any requested JSON.
 
-The proof totals sum the proof bytes recorded for individual operations.
-The change column shows `—` when the before value is zero or when timing is unavailable.
+The block proof total uses `execution.proof_bytes` when both traces have it, and complete operation proof sums otherwise.
+If either input lacks proof data, `diff` prints `n/a` or `(partial)` and exits with code 1 when `--max-proof-delta` is set.
+If `execution.proof_bytes` differs from the attributed operation sum, `diff` warns on stderr and uses `execution.proof_bytes`.
+The change column shows `—` when the before value is zero or when proof or timing data is unavailable.
 The tables show [local replay timings](../concepts/timings.md) in microseconds. JSON uses nanoseconds.
 
 ## follow
@@ -263,5 +267,5 @@ See [Headers and authentication](../guides/send-traces.md#headers-and-authentica
 | 1 | The replay, an input or the export failed. For `report`, at least one input failed. For `follow`, see [its exit codes](#follow). |
 | 2 | The command line was wrong, for example a missing or unknown flag. |
 | 3 | `call --check-state-call` found a different result from the node's. JSON, save and export still ran. |
-| 4 | A `diff` regression budget failed. The command still printed tables and wrote any requested JSON. |
+| 4 | A `diff` regression budget failed. Tables and any requested JSON are written first unless output fails. |
 | 130 | `follow` got a second stop signal and exited at once. |
