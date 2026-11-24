@@ -190,8 +190,16 @@ impl Metadata {
         }
     }
 
-    fn types(&self) -> &PortableRegistry {
+    pub(crate) fn types(&self) -> &PortableRegistry {
         with_runtime!(&self.runtime, md => &md.types)
+    }
+
+    /// The value type of the storage item `pallet::item`.
+    pub(crate) fn storage_value_type(&self, pallet: &str, item: &str) -> Option<u32> {
+        self.items
+            .values()
+            .find(|i| i.pallet == pallet && i.name == item)
+            .map(|i| i.info.value_id)
     }
 
     /// Runtime API input/output IDs (V15+). Match the whole export name, allowing underscores in methods.

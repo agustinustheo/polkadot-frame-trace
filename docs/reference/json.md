@@ -23,6 +23,7 @@ Top-level fields:
 | `execution` | The replay result, see below. |
 | `timing` | `start_ns` and `duration_ns` of the whole replay. |
 | `totals` | Counts for the whole block, see [Stats](#stats). |
+| `block_weight` | The block's last `System::BlockWeight` write: `normal`, `operational` and `mandatory`, each with `ref_time` and `proof_size`. Omitted without metadata. |
 | `phases` | The [phases](../concepts/phases.md), in order. |
 | `runtime_spans` | Spans the runtime reported, with `id`, `parent_id`, `name`, `target`, times, and the proof size at start and end. Empty without a traced runtime. |
 | `skipped_events` | Recorded events that were not storage operations. |
@@ -58,12 +59,18 @@ Top-level fields:
 | `extrinsic_index`, `call`, `signed` | For extrinsics: the index, `Pallet.call`, and whether it was signed. |
 | `extrinsic_hash` | For extrinsics: `0x`-prefixed blake2-256 of the encoded extrinsic, the hash `author_submitExtrinsic` returns. Omitted when the bytes were not in the trace, and in JSON written before this field existed. |
 | `call_error` | Why polkadot-frame-trace could not decode the extrinsic's call name, otherwise `null`. It says nothing about whether the extrinsic succeeded. |
+| `charged_weight` | For extrinsics: `ref_time` and `proof_size` from the extrinsic's `ExtrinsicSuccess` or `ExtrinsicFailed` event. `proof_size` is in bytes. |
+| `dispatch_class`, `pays_fee` | From the same event: `normal`, `operational` or `mandatory`, and `yes` or `no`. |
+| `outcome` | `success` for `ExtrinsicSuccess`, `failed` for `ExtrinsicFailed`. |
 | `stats` | Counts for this phase, see [Stats](#stats). |
 | `wall_time` | `start_ns`, `end_ns`, `duration_ns` and `source`. `source` is `runtime_span` when the runtime reported the phase, or `storage_envelope` when the times run from the first to the last storage call. `null` without times. |
 | `ops` | The storage operations, in order. |
 | `post_inherents` | The nested post-inherents phase, on the extrinsic it ran inside. Otherwise `null`. |
 
 Post-inherent operations and proof bytes are counted in the nested phase, not in its parent.
+
+The four event fields are omitted without metadata, or when the event does not decode.
+JSON written before these fields existed still loads.
 
 ### A storage operation
 
@@ -103,7 +110,7 @@ The first read of Alice's account in block #4:
 | `seq` | Position in the block, from 0. |
 | `op` | The operation, such as `get`. See [Storage operations](spans.md#storage-operations). |
 | `key` | The raw key in hex. |
-| `pallet`, `item`, `map_keys`, `name`, `label` | Decoded names. |
+| `pallet`, `item`, `map_keys`, `name`, `label` | Decoded names. `item` is `<storage root>` or `<child storage root>` for `storage_root` operations. |
 | `key_complete`, `key_truncated` | Whether the key was fully decoded, and whether it was cut. |
 | `child_trie`, `child_trie_truncated` | The child trie, for child trie operations. |
 | `value_len`, `value_truncated` | Length of the value in bytes, and whether it was cut. |
@@ -190,7 +197,7 @@ polkadot-frame-trace report --rpc wss://westend-asset-hub-rpc.polkadot.io --last
 | `phase_order` | Phase groups in the order they first ran. |
 | `items` | A tally per storage item. |
 | `hooks` | A tally per hook. Empty without runtime spans. |
-| `extrinsics` | Per extrinsic type: `count`, `median` and `p95` of `ops`, `proof_bytes`, `storage_ns` and `wall_ns`, plus totals. |
+| `extrinsics` | Per extrinsic type: `count`, `median` and `p95` of `ops`, `proof_bytes`, `storage_ns` and `wall_ns`, plus totals. `charged_proof_bytes` and `total_proof_gap_bytes` are present when every sample has a charged weight, see below. |
 | `execution_proof_bytes` | Sum of the blocks' execution proofs. |
 | `unattributed_proof_bytes` | Proof bytes not assigned to any operation. |
 | `over_attributed_proof_bytes`, `over_attributed_blocks` | Proof bytes counted more than once after rollbacks, and in how many blocks. |
@@ -204,4 +211,8 @@ If `proof_ops_observed` is 0, proof bytes were not recorded, even though the sum
 Medians and the 95th percentile are exact up to 1,024 samples per extrinsic type.
 Above that they are within 1.5625% of the true value.
 A distribution is `null` when not every sample had the data, for example `wall_ns` without runtime spans.
+
+`charged_proof_bytes` is the `median` and `p95` of the charged `proof_size`.
+`total_proof_gap_bytes` is the sum of measured proof bytes minus charged proof bytes.
+Both are omitted unless every sample of that extrinsic type has them.
 JSON lists every row; `--top` only limits the terminal tables.

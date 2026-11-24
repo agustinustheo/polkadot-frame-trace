@@ -1,10 +1,16 @@
 //! A traced block with names: the form the exporters and the CLI consume.
 
-use crate::model::{Phase, PrintedBytes, Stats, StorageOp, TracedBlock};
+use std::collections::BTreeMap;
+
+use crate::model::{OpKind, Phase, PrintedBytes, Stats, StorageOp, TracedBlock};
 use codec::Decode;
 use serde::{Deserialize, Serialize};
 
-use crate::decode::{KeyName, Metadata, key::well_known};
+use crate::decode::{
+    BlockWeight, KeyName, Metadata, Weight,
+    key::well_known,
+    weight::{self, Dispatch},
+};
 
 /// A [`TracedBlock`] with every key and extrinsic named. Serialises to the `--json` output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +40,9 @@ pub struct AnnotatedBlock {
     pub skipped_events: usize,
     /// Totals over the block.
     pub totals: Stats,
+    /// The last `System::BlockWeight` written in the block; needs metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_weight: Option<BlockWeight>,
     /// Phases in execution order.
     pub phases: Vec<AnnotatedPhase>,
 }
@@ -74,6 +83,18 @@ pub struct AnnotatedPhase {
     pub call_error: Option<String>,
     /// Display name, for example `extrinsic 1: Balances.transfer_keep_alive`.
     pub label: String,
+    /// Weight charged by the extrinsic's `ExtrinsicSuccess` or `ExtrinsicFailed` event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charged_weight: Option<Weight>,
+    /// `normal`, `operational` or `mandatory`, from the same event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_class: Option<String>,
+    /// `yes` or `no`, from the same event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pays_fee: Option<String>,
+    /// `success` (`ExtrinsicSuccess`) or `failed` (`ExtrinsicFailed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// Storage totals of the phase's own ops (without `post_inherents`).
     pub stats: Stats,
     /// The phase's own ops in order (without those of `post_inherents`).
@@ -135,7 +156,8 @@ pub struct AnnotatedOp {
     pub key_complete: bool,
     /// Pallet, when known.
     pub pallet: Option<String>,
-    /// `Pallet::Item`, a well-known key, `child:<id>` or `<unknown>`.
+    /// `Pallet::Item`, a well-known key, `child:<id>`, `<storage root>`, `<child storage root>`
+    /// or `<unknown>`.
     pub item: String,
     /// Decoded map keys.
     pub map_keys: Vec<String>,
@@ -170,6 +192,7 @@ pub fn annotate_at_block(
             .or_default() += 1;
     }
     let mut hooks = std::collections::BTreeMap::<(String, String), usize>::new();
+    let (dispatches, block_weight) = metadata.map(|md| weights(block, md)).unwrap_or_default();
     AnnotatedBlock {
         schema_version: 2,
         execution: None,
@@ -212,18 +235,46 @@ pub fn annotate_at_block(
         parent_hash: block.parent_hash.clone(),
         skipped_events: block.skipped_events,
         totals: block.totals(),
+        block_weight,
         phases: block
             .phases
             .iter()
-            .map(|phase| annotate_phase(block, phase, metadata))
+            .map(|phase| annotate_phase(block, phase, metadata, &dispatches))
             .collect(),
     }
+}
+
+/// Each extrinsic's last `ExtrinsicSuccess` or `ExtrinsicFailed` event, and the last
+/// `System::BlockWeight` write. Both come from values already in the trace.
+fn weights(block: &TracedBlock, md: &Metadata) -> (BTreeMap<u32, Dispatch>, Option<BlockWeight>) {
+    let key = |item: &str| {
+        let mut key = sp_crypto_hashing::twox_128(b"System").to_vec();
+        key.extend(sp_crypto_hashing::twox_128(item.as_bytes()));
+        key
+    };
+    let (events, block_weight_key) = (key("Events"), key("BlockWeight"));
+    let mut dispatches = BTreeMap::new();
+    let mut block_weight = None;
+    for op in block.ops.iter().filter(|op| op.child_trie.is_none()) {
+        let (Some(key), Some(value)) = (op.key.complete(), op.value.as_deref()) else {
+            continue;
+        };
+        if op.kind == OpKind::Append && key == events {
+            if let Some(dispatch) = weight::dispatch(md, value) {
+                dispatches.insert(dispatch.index, dispatch);
+            }
+        } else if op.kind == OpKind::Put && key == block_weight_key {
+            block_weight = weight::block_weight(md, value).or(block_weight);
+        }
+    }
+    (dispatches, block_weight)
 }
 
 fn annotate_phase(
     block: &TracedBlock,
     phase: &Phase,
     metadata: Option<&Metadata>,
+    dispatches: &BTreeMap<u32, Dispatch>,
 ) -> AnnotatedPhase {
     let decoded = metadata
         .zip(phase.extrinsic.as_deref())
@@ -237,6 +288,10 @@ fn annotate_phase(
         Some(call) => format!("{}: {call}", phase.kind),
         None => phase.kind.to_string(),
     };
+    let dispatch = phase
+        .kind
+        .extrinsic_index()
+        .and_then(|i| dispatches.get(&i));
     AnnotatedPhase {
         wall_time: phase_bounds(block, phase),
         signed: phase.extrinsic.as_ref().and_then(|bytes| {
@@ -253,6 +308,10 @@ fn annotate_phase(
         call,
         call_error,
         label,
+        charged_weight: dispatch.map(|d| d.weight),
+        dispatch_class: dispatch.map(|d| d.class.clone()),
+        pays_fee: dispatch.and_then(|d| d.pays_fee.clone()),
+        outcome: dispatch.map(|d| d.outcome.to_owned()),
         stats: phase.stats,
         ops: block
             .phase_ops(phase)
@@ -261,17 +320,22 @@ fn annotate_phase(
         post_inherents: phase
             .post_inherents
             .as_ref()
-            .map(|nested| Box::new(annotate_phase(block, nested, metadata))),
+            .map(|nested| Box::new(annotate_phase(block, nested, metadata, dispatches))),
     }
 }
 
 fn annotate_op(op: &StorageOp, metadata: Option<&Metadata>) -> AnnotatedOp {
     let child = op.child_trie.as_ref().map(|trie| trie.head.as_slice());
-    let name = match (metadata, op.key.complete()) {
-        (Some(md), Some(key)) => md.key_name(child, key),
+    let name = match (op.kind, metadata, op.key.complete()) {
+        // Keyless: name the work, so it is never counted with unknown keys.
+        (OpKind::StorageRoot, _, _) if child.is_some() => {
+            KeyName::WellKnown("<child storage root>".into())
+        }
+        (OpKind::StorageRoot, _, _) => KeyName::WellKnown("<storage root>".into()),
+        (_, Some(md), Some(key)) => md.key_name(child, key),
         // Never decode map keys from a truncated key: the middle is missing.
-        (Some(md), None) => md.item_name(child, &op.key.head),
-        (None, key) => match (child, key.and_then(well_known)) {
+        (_, Some(md), None) => md.item_name(child, &op.key.head),
+        (_, None, key) => match (child, key.and_then(well_known)) {
             (Some(trie), _) => KeyName::Child {
                 trie: trie.to_vec(),
                 key: op.key.head.clone(),
@@ -452,5 +516,77 @@ mod phase_timing_tests {
         assert_eq!(json["phases"][0]["wall_time"]["end_ns"], 99);
         let loaded: AnnotatedBlock = serde_json::from_value(json).unwrap();
         assert_eq!(loaded.phases[0].wall_time.as_ref().unwrap().duration_ns, 98);
+    }
+}
+
+#[cfg(test)]
+mod weight_and_root_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn block() -> TracedBlock {
+        let raw = serde_json::from_value::<crate::model::rpc::BlockTrace>(
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../fixtures/model/two-extrinsics.json"
+            ))
+            .unwrap()["result"]["blockTrace"]
+                .take(),
+        )
+        .unwrap();
+        TracedBlock::from_trace(&raw).unwrap()
+    }
+
+    #[test]
+    fn storage_roots_are_named_and_never_unknown() {
+        let mut block = block();
+        let root = block
+            .ops
+            .iter()
+            .position(|op| op.kind == OpKind::StorageRoot)
+            .unwrap();
+        let mut child = block.ops[root].clone();
+        child.child_trie = Some(PrintedBytes::full(b"trie".to_vec()));
+        let md = Metadata::from_bytes(include_bytes!("../../fixtures/metadata/westend-v16.scale"))
+            .unwrap();
+        for metadata in [None, Some(&md)] {
+            let named = annotate_op(&block.ops[root], metadata);
+            assert_eq!(
+                (named.item.as_str(), named.name.as_str()),
+                ("<storage root>", "<storage root>")
+            );
+            assert_eq!(named.pallet, None);
+            let named = annotate_op(&child, metadata);
+            assert_eq!(named.item, "<child storage root>");
+            assert_eq!(named.child_trie.as_deref(), Some("0x74726965"));
+        }
+        // Keyless ops other than storage roots stay unknown.
+        block.ops[root].kind = OpKind::IndexTransaction;
+        assert_eq!(annotate_op(&block.ops[root], None).item, "<unknown>");
+    }
+
+    #[test]
+    fn json_without_weights_still_loads_and_omits_them() {
+        let named = annotate(&block(), None);
+        assert!(named.block_weight.is_none());
+        assert!(named.all_phases().all(|p| p.charged_weight.is_none()));
+        let mut json = serde_json::to_value(&named).unwrap();
+        assert!(json.get("block_weight").is_none());
+        for key in ["charged_weight", "dispatch_class", "pays_fee", "outcome"] {
+            assert!(json["phases"][1].get(key).is_none(), "{key}");
+        }
+        // The same JSON with the new fields round trips.
+        json["block_weight"] = serde_json::json!({
+            "normal": {"ref_time": 1, "proof_size": 2},
+            "operational": {"ref_time": 0, "proof_size": 0},
+            "mandatory": {"ref_time": 3, "proof_size": 4}
+        });
+        json["phases"][1]["charged_weight"] =
+            serde_json::json!({"ref_time": 5, "proof_size": 6283});
+        json["phases"][1]["outcome"] = serde_json::json!("failed");
+        let loaded: AnnotatedBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded.block_weight.unwrap().total().proof_size, 6);
+        assert_eq!(loaded.phases[1].charged_weight.unwrap().proof_size, 6283);
+        assert_eq!(loaded.phases[1].outcome.as_deref(), Some("failed"));
+        assert_eq!(loaded.phases[1].dispatch_class, None);
     }
 }

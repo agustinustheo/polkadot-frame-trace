@@ -332,6 +332,12 @@ pub struct ExtrinsicAggregate {
     pub total_storage_ns: u64,
     pub storage_ns: Distribution,
     pub wall_ns: Option<Distribution>,
+    /// Charged `proof_size` from `ExtrinsicSuccess`/`ExtrinsicFailed`, when every sample has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charged_proof_bytes: Option<Distribution>,
+    /// Sum of measured minus charged proof bytes, when every sample has both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_proof_gap_bytes: Option<i64>,
 }
 /// Provenance kept for every input block that ran a substitute runtime.
 #[derive(Serialize)]
@@ -439,6 +445,9 @@ struct ExtrinsicSamples {
     proof: Samples,
     storage: Samples,
     wall: Samples,
+    charged: Samples,
+    gaps: usize,
+    gap: i64,
     total: Tally,
 }
 #[derive(Serialize)]
@@ -531,8 +540,24 @@ impl Accumulator {
                     .or_default();
                 sample.count += 1;
                 sample.ops.push(tally.ops as u64);
-                if tally.ops > 0 && tally.proof_ops_observed == tally.ops {
+                let measured = tally.ops > 0 && tally.proof_ops_observed == tally.ops;
+                if measured {
                     sample.proof.push(tally.proof_bytes as u64);
+                }
+                if let Some(charged) = phase.charged_weight.map(|w| w.proof_size) {
+                    sample.charged.push(charged);
+                    if measured {
+                        sample.gaps += 1;
+                        let gap = tally.proof_bytes as i128 - i128::from(charged);
+                        sample.gap =
+                            sample
+                                .gap
+                                .saturating_add(i64::try_from(gap).unwrap_or(if gap < 0 {
+                                    i64::MIN
+                                } else {
+                                    i64::MAX
+                                }));
+                    }
                 }
                 sample.storage.push(tally.storage_ns);
                 if let Some(t) = phase
@@ -603,6 +628,12 @@ impl Accumulator {
                     } else {
                         None
                     },
+                    charged_proof_bytes: if values.charged.count == values.count {
+                        values.charged.finish()
+                    } else {
+                        None
+                    },
+                    total_proof_gap_bytes: (values.gaps == values.count).then_some(values.gap),
                     total_proof_bytes: values.total.proof_bytes,
                     total_ops: values.total.ops,
                     total_storage_ns: values.total.storage_ns,
@@ -686,16 +717,21 @@ pub fn render_body(r: &Report, top: usize, sort: SortKey) -> String {
         item_table(&r.items, top, sort)
     );
     out += &truncated(r.items.len(), top);
-    let mut exts = crate::summary::table(
-        1,
-        &[
-            "pallet.call",
-            "count",
-            "operations median/p95",
-            "proof bytes median/p95",
-            "storage time µs median/p95",
-        ],
-    );
+    let charged = r
+        .extrinsics
+        .values()
+        .any(|e| e.charged_proof_bytes.is_some());
+    let mut header = vec![
+        "pallet.call",
+        "count",
+        "operations median/p95",
+        "proof bytes median/p95",
+        "storage time µs median/p95",
+    ];
+    if charged {
+        header.extend(["charged proof median/p95", "proof gap mean"]);
+    }
+    let mut exts = crate::summary::table(1, &header);
     let mut rows: Vec<_> = r.extrinsics.iter().collect();
     rows.sort_by(|a, b| {
         let cost = |e: &ExtrinsicAggregate| match sort {
@@ -706,7 +742,7 @@ pub fn render_body(r: &Report, top: usize, sort: SortKey) -> String {
         cost(b.1).cmp(&cost(a.1)).then(a.0.cmp(b.0))
     });
     for (name, e) in rows.into_iter().take(top) {
-        exts.add_row(vec![
+        let mut row = vec![
             name.clone(),
             e.count.to_string(),
             pair(&e.ops, 1.0),
@@ -714,7 +750,19 @@ pub fn render_body(r: &Report, top: usize, sort: SortKey) -> String {
                 .as_ref()
                 .map_or_else(|| "n/a".into(), |d| pair(d, 1.0)),
             pair(&e.storage_ns, 1000.0),
-        ]);
+        ];
+        if charged {
+            row.push(
+                e.charged_proof_bytes
+                    .as_ref()
+                    .map_or_else(|| "—".into(), |d| pair(d, 1.0)),
+            );
+            row.push(e.total_proof_gap_bytes.map_or_else(
+                || "—".into(),
+                |gap| crate::summary::signed(i128::from(gap) / e.count as i128),
+            ));
+        }
+        exts.add_row(row);
     }
     out += &format!(
         "\nExtrinsic distributions (ranked by total {})\n{exts}\n{}",
@@ -961,6 +1009,53 @@ mod tests {
         );
         assert_eq!(r.phases["post_inherents"].tally.ops, 2);
         assert_eq!(r.phases["signed_extrinsics"].tally.ops, expected * 2);
+    }
+    #[test]
+    fn charged_proof_and_gap_are_aggregated_per_call() {
+        let mut block = trace();
+        for phase in &mut block.phases {
+            for op in &mut phase.ops {
+                op.proof_bytes_added = Some(100);
+            }
+            if phase.kind == "apply_extrinsic" {
+                phase.call = Some("Balances.transfer_keep_alive".into());
+                let measured = phase.ops.len() as u64 * 100;
+                phase.charged_weight = Some(crate::decode::Weight {
+                    ref_time: 1,
+                    proof_size: measured.saturating_sub(250),
+                });
+            }
+        }
+        let r = aggregate(&[block.clone()]);
+        let e = &r.extrinsics["Balances.transfer_keep_alive"];
+        assert_eq!(e.total_proof_gap_bytes, Some(250 * e.count as i64));
+        assert!(e.charged_proof_bytes.is_some());
+        let text = render_sorted(&r, 3, SortKey::Proof);
+        assert!(
+            text.contains("charged proof median/p95 ┆ proof gap mean"),
+            "{text}"
+        );
+        assert!(text.contains("+250 │"), "{text}");
+        // One sample without a charged weight hides both, rather than mixing samples.
+        block
+            .phases
+            .iter_mut()
+            .find(|p| p.kind == "apply_extrinsic")
+            .unwrap()
+            .charged_weight = None;
+        let r = aggregate(&[block]);
+        let e = &r.extrinsics["Balances.transfer_keep_alive"];
+        assert_eq!(
+            (e.total_proof_gap_bytes, e.charged_proof_bytes.is_some()),
+            (None, false)
+        );
+        let json = serde_json::to_value(&r).unwrap();
+        let json = &json["extrinsics"]["Balances.transfer_keep_alive"];
+        assert!(
+            json.get("total_proof_gap_bytes").is_none()
+                && json.get("charged_proof_bytes").is_none()
+        );
+        assert!(!render_sorted(&r, 3, SortKey::Proof).contains("proof gap mean"));
     }
     #[test]
     fn report_ranges_are_inclusive_finalized_non_genesis_and_bounded() {

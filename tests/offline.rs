@@ -144,13 +144,40 @@ fn check(name: &str, wasm: bool) {
         polkadot_frame_trace::decode::Metadata::from_hex(&result.artifact.metadata).unwrap();
     let annotated = polkadot_frame_trace::decode::annotate(&block, Some(&metadata));
     assert!(annotated.phases.iter().all(|p| p.call_error.is_none()));
-    if name == "people-transfer" {
-        assert!(
-            annotated
-                .phases
-                .iter()
-                .any(|p| p.call.as_deref() == Some("Balances.transfer_keep_alive"))
+    // Charged weights come from values already in the trace: no extra RPC calls.
+    assert!(annotated.block_weight.is_some(), "{name}");
+    for phase in annotated.all_phases() {
+        let extrinsic = phase.kind == "apply_extrinsic";
+        assert_eq!(
+            phase.charged_weight.is_some(),
+            extrinsic,
+            "{name}: {}",
+            phase.label
         );
+        assert_eq!(phase.outcome.as_deref(), extrinsic.then_some("success"));
+    }
+    let roots: Vec<_> = annotated
+        .all_phases()
+        .flat_map(|p| &p.ops)
+        .filter(|o| o.op == "storage_root")
+        .collect();
+    assert!(!roots.is_empty() && roots.iter().all(|o| o.item == "<storage root>"));
+    if name == "people-transfer" {
+        let transfer = annotated
+            .phases
+            .iter()
+            .find(|p| p.call.as_deref() == Some("Balances.transfer_keep_alive"))
+            .unwrap();
+        assert_eq!(transfer.dispatch_class.as_deref(), Some("normal"));
+        assert_eq!(transfer.pays_fee.as_deref(), Some("yes"));
+        assert!(transfer.charged_weight.unwrap().proof_size > 0);
+        let mut inherents = annotated
+            .phases
+            .iter()
+            .filter(|p| p.signed == Some(false))
+            .peekable();
+        assert!(inherents.peek().is_some());
+        assert!(inherents.all(|p| p.dispatch_class.as_deref() == Some("mandatory")));
     }
     if name == "people-kill-prefix" {
         assert_eq!(

@@ -65,7 +65,7 @@ It shows every block you traced in the last hour.
 1. Totals for the time range: blocks, storage operations, reads that added [proof bytes](../concepts/proof-bytes.md), repeated reads, proof bytes and writes.
 2. One row per block. Click a span ID to open that block's trace.
 3. The [pallets](../reference/glossary.md#pallet) whose keys were read or written most.
-4. The storage items that added the most proof bytes. `<unknown>` holds operations without a storage item, such as `storage_root`.
+4. The storage items that added the most proof bytes. `<storage root>` holds the bytes read to compute the state root at the end of the block.
 5. Keys read again in the same [phase](../concepts/phases.md). See [Find repeated reads](read-the-tables.md#find-repeated-reads).
 6. Where reads (`get`, `exists`, `hash`) were answered: [cache or trie](../concepts/cache-or-trie.md). Writes have no origin, so they are left out. A read whose origin was not recorded shows as `unknown`.
 7. Every read that went to the trie and added proof bytes, largest first.

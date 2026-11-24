@@ -8,6 +8,7 @@ mod annotate;
 mod key;
 mod metadata;
 pub(crate) mod ss58;
+mod weight;
 
 pub use annotate::{
     AnnotatedBlock, AnnotatedCall, AnnotatedOp, AnnotatedPhase, ExecutionInfo, RuntimeOverrideInfo,
@@ -15,6 +16,7 @@ pub use annotate::{
 };
 pub use key::KeyName;
 pub use metadata::Metadata;
+pub use weight::{BlockWeight, Weight};
 
 /// Errors from loading metadata or decoding.
 #[derive(Debug, thiserror::Error)]

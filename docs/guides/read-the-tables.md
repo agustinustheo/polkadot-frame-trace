@@ -83,7 +83,7 @@ Top items by proof bytes
 
 | Column | Meaning |
 | --- | --- |
-| `item` | The storage item, as `Pallet::Item`. `<unknown>` holds operations with no named key, such as computing the state root. Keys starting with `:` are well-known keys, such as `:code`. |
+| `item` | The storage item, as `Pallet::Item`. `<storage root>` holds the work of computing the state root. `<child storage root>` does the same for a child trie. `<unknown>` holds keys with no name. Keys starting with `:` are well-known keys, such as `:code`. |
 | `reads: cache` | Reads answered from the block's own changes. See [Cache or trie](../concepts/cache-or-trie.md). |
 | `trie (already in proof)` | Reads that went to the chain state and used only trie nodes seen earlier in this replay. A rollback may have removed them from the current proof. |
 | `trie (new)` | Reads that added new trie nodes to the proof. |
@@ -126,13 +126,14 @@ The same commands rank extrinsic types:
 
 ```text
 Extrinsic distributions (ranked by total proof bytes)
-│ pallet.call                         ┆ count ┆ operations median/p95 ┆ proof bytes median/p95 ┆ storage time µs median/p95 │
-│ Utility.batch                       ┆     1 ┆           200.0/200.0 ┆            827.0/827.0 ┆                492.3/492.3 │
+│ pallet.call                         ┆ count ┆ operations median/p95 ┆ proof bytes median/p95 ┆ storage time µs median/p95 ┆ charged proof median/p95 ┆ proof gap mean │
+│ Utility.batch                       ┆     1 ┆           200.0/200.0 ┆            827.0/827.0 ┆                581.0/581.0 ┆              605.0/605.0 ┆           +222 │
 ...
 ```
 
 `count` is how many extrinsics of that type the input had.
-The other columns give the median and the 95th percentile per extrinsic.
+The next columns give the median and the 95th percentile per extrinsic.
+`proof gap mean` is the average gap per extrinsic, see [Find undercharged extrinsics](#find-undercharged-extrinsics).
 With many blocks, these show which calls cost the most storage in a typical case and a bad case.
 See [Analyse many blocks](analyse-many-blocks.md).
 
@@ -164,3 +165,43 @@ For the batch it is 1,513 bytes: 827 bytes for the batch plus 686 bytes for its 
 Runtime spans need a runtime [built with tracing](see-runtime-calls.md).
 
 For many blocks, [use `report`](analyse-many-blocks.md).
+
+## Find undercharged extrinsics
+
+Compare the proof size each extrinsic paid for with the proof bytes it added.
+The charge comes from the extrinsic's `ExtrinsicSuccess` or `ExtrinsicFailed` event.
+polkadot-frame-trace reads these events from the replay, with no extra RPC calls.
+It needs the runtime's metadata, which a replay builds.
+
+**Storage per phase** then has two more columns:
+
+```text
+│ phase                                            ┆ operations ┆ reads ┆ writes ┆ proof bytes ┆ storage time µs ┆ wall time µs ┆ charged proof ┆ proof gap │
+│ initialization                                   ┆        152 ┆    74 ┆     77 ┆        3490 ┆           347.8 ┆        609.0 ┆             — ┆         — │
+│ extrinsic 0: ParachainSystem.set_validation_data ┆         54 ┆    26 ┆     28 ┆         495 ┆           182.5 ┆        410.5 ┆             0 ┆      +495 │
+│ extrinsic 1: Timestamp.set                       ┆         26 ┆    14 ┆     12 ┆         139 ┆            44.0 ┆         65.4 ┆          1493 ┆     -1354 │
+│ extrinsic 2: Utility.batch                       ┆        200 ┆   146 ┆     54 ┆         827 ┆           626.5 ┆        919.9 ┆           605 ┆      +222 │
+...
+Block weight (System::BlockWeight): charged proof 272391, measured 6586, gap -265805
+Mandatory class (hooks and mandatory extrinsics): charged proof 271553, measured 5759, gap -265794
+```
+
+| Column | Meaning |
+| --- | --- |
+| `charged proof` | The proof size, in bytes, that the extrinsic's weight charged. |
+| `proof gap` | Proof bytes minus charged proof. `+` means the extrinsic added more than it paid for. |
+| `—` | The phase has no event of its own, such as initialization. |
+
+- `Utility.batch` added 827 proof bytes but paid for 605: 222 bytes more than its weight.
+- `ParachainSystem.set_validation_data` charges no proof size, but added 495 bytes.
+- `Timestamp.set` paid for 1,493 bytes and added 139.
+
+A negative gap is normal. The first phase that reads a trie node gets its bytes.
+A later extrinsic that reads the same node adds 0 bytes, but its weight still pays for it.
+A positive gap means the extrinsic added more new proof bytes than its weight allows for.
+
+The two lines under the table use the block's final `System::BlockWeight`.
+The first compares the charge of all three dispatch classes with the whole block.
+The second compares the mandatory class with initialization, post inherents, finalization and mandatory extrinsics.
+It appears only when every extrinsic has a class.
+Hook weights may be worst-case estimates, so the mandatory class often pays for far more than it uses.
