@@ -9,6 +9,7 @@ use clap::{Args, Parser, Subcommand};
 #[macro_use]
 mod log;
 mod call;
+mod diff;
 mod follow;
 mod report;
 mod source;
@@ -44,6 +45,8 @@ enum Command {
         after_help = "Examples:\n  polkadot-frame-trace report block-1.json block-2.json\n  polkadot-frame-trace report --rpc URL --last 10"
     )]
     Report(report::ReportArgs),
+    /// Compare two block traces and check regression budgets.
+    Diff(diff::DiffArgs),
     /// Trace storage use and the result of a runtime API call.
     #[command(
         after_help = "Examples:\n  polkadot-frame-trace call --rpc URL --at finalized --method Core_version --data 0x --check-state-call\n  polkadot-frame-trace call --offline fixtures/replay/call-people-nonce"
@@ -80,6 +83,9 @@ pub fn main() -> std::process::ExitCode {
         Err(error) if error.downcast_ref::<follow::Reported>().is_some() => {
             std::process::ExitCode::FAILURE
         }
+        Err(error) if error.downcast_ref::<diff::RegressionExceeded>().is_some() => {
+            std::process::ExitCode::from(4)
+        }
         Err(error) => {
             eprintln!("Error: {error:#}");
             std::process::ExitCode::from(if error.downcast_ref::<OracleMismatch>().is_some() {
@@ -103,6 +109,7 @@ impl std::error::Error for OracleMismatch {}
 fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Report(args) => report::run(args),
+        Command::Diff(args) => diff::run(args),
         Command::Block(args) => block(args),
         Command::Call(args) => call::run(args),
         Command::Follow(args) => follow(args),
@@ -148,8 +155,8 @@ fn load(args: &source::SourceArgs) -> Result<AnnotatedBlock> {
     Ok(block)
 }
 
-fn write_json(block: &AnnotatedBlock, path: &std::path::Path) -> Result<()> {
-    let json = serde_json::to_string_pretty(block)?;
+fn write_json(value: &impl serde::Serialize, path: &std::path::Path) -> Result<()> {
+    let json = serde_json::to_string_pretty(value)?;
     if path.as_os_str() == "-" {
         writeln!(std::io::stdout(), "{json}")?;
     } else {
